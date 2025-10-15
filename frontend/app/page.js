@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 
 export default function Home() {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -10,18 +10,10 @@ export default function Home() {
   const [referenceCustomTargets, setReferenceCustomTargets] = useState('');
   const [querySubsetTargets, setQuerySubsetTargets] = useState('');
   const [queryCustom, setQueryCustom] = useState('');
-  const advancedMenuRef = useRef(null);
 
   function toggleAdvancedMenu() {
     setShowAdvanced(!showAdvanced);
   }
-
-  useEffect(() => {
-    if (showAdvanced && advancedMenuRef.current) {
-      advancedMenuRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      advancedMenuRef.current.focus();
-    }
-  }, [showAdvanced]);
 
   function handleSubmit() {
     const formData = {
@@ -40,12 +32,7 @@ export default function Home() {
 
   const AdvancedMenu = () => {
     return (
-      <div 
-        ref={advancedMenuRef}
-        tabIndex="-1"
-        className="relative inline-block text-left w-full text-amber-950 px-10 py-6 mt-5 border border-gray-300 bg-teal-50 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-400" 
-        id='advanced-menu'
-      >
+      <div className="relative inline-block text-left w-full text-amber-950 px-10 py-6 mt-5 border border-gray-300 bg-teal-50 rounded-md shadow-sm" id='advanced-menu'>
         <h3 className='text-2xl mb-4'>Advanced Options</h3>
         
         <div className="mt-4">
@@ -157,7 +144,7 @@ export default function Home() {
           <div className="px-4 py-5 bg-white rounded-lg border border-gray-200">
             <p className="font-semibold mb-3">
               To screen custom compounds, list each compound separately with these columns:
-              (please don't include in [compound_id] any commas, spaces or tabs)
+              (please do not include in [compound_id] any commas, spaces or tabs)
             </p>
             
             <pre className="whitespace-pre font-mono text-sm bg-gray-100 p-4 rounded-lg overflow-x-auto mb-3">
@@ -178,7 +165,7 @@ NC[C@H](O)c1ccc(O)c(O)c1`}
           <div className="px-4 py-5 bg-white rounded-lg border border-gray-200">
             <p className="font-semibold mb-3">
               To screen custom compounds with targets, list each compound with these columns:
-              (please don't include in [compound_id] any commas, spaces or tabs) which will group the compounds by the target id into sets.
+              (please do not include in [compound_id] any commas, spaces or tabs) which will group the compounds by the target id into sets.
             </p>
             
             <pre className="whitespace-pre font-mono text-sm bg-gray-100 p-4 rounded-lg overflow-x-auto mb-3">
@@ -232,7 +219,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
             <p className="text-md">
               SEA is provided free-of-charge in the hope that it will be useful, but you must use it at your own risk. We make no guarantees about data confidentiality on this public service website.<br/>
               If you would like to use SEA securely, please contact support+sea*bkslab*org.<br/>
-              To determine whether SEA's predictions for your compounds are already known, we recommend you visit the extensive K<sub>i</sub> Database at the NIMH Psychoactive Drug Screening Program.
+              To determine whether SEA&rsquo;s predictions for your compounds are already known, we recommend you visit the extensive K<sub>i</sub> Database at the NIMH Psychoactive Drug Screening Program.
             </p>
           </div>
         </div>
