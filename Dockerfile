@@ -14,7 +14,12 @@ FROM conda/miniconda3:latest
 
 WORKDIR /app/backend
 
-RUN apt-get update && apt-get install -y build-essential
+RUN apt-get update && \
+    apt-get clean
+
+RUN apt-get install -y gcc g++ 
+RUN apt-get install -y git
+
 COPY environment.yml ./
 RUN conda env create -f environment.yml
 
