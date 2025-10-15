@@ -13,9 +13,8 @@ RUN npm run build
 FROM conda/miniconda3:latest
 
 WORKDIR /app/backend
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && \
-    apt-get clean
 
 RUN apt-get install -y gcc g++ 
 RUN apt-get install -y git
