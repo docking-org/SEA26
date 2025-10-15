@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Backend build stage
-FROM continuumio/anaconda3:latest as backend
+FROM conda/miniconda3:latest
 
 WORKDIR /app/backend
 
