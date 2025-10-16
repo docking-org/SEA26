@@ -13,4 +13,4 @@ deploy production:
     - docker rm "${CI_PROJECT_NAME}" || true
     - docker run --name ${CI_PROJECT_NAME} 
           -d --restart unless-stopped
-          -d -p 0.0.0.0:5050 ${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}-0.1.${CI_JOB_ID}
+          -d -p 3000:3030 ${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}-0.1.${CI_JOB_ID}
