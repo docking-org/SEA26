@@ -8,7 +8,7 @@ RUN npm install
 
 COPY frontend/ ./
 RUN npm run build
-
+RUN npm start &
 # Backend build stage
 FROM condaforge/miniforge3:latest as backend
 
