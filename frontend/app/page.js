@@ -1,5 +1,5 @@
 'use client';
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 export default function Home() {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -10,12 +10,20 @@ export default function Home() {
   const [referenceCustomTargets, setReferenceCustomTargets] = useState('');
   const [querySubsetTargets, setQuerySubsetTargets] = useState('');
   const [queryCustom, setQueryCustom] = useState('');
+  const advancedMenuRef = useRef(null);
 
   function toggleAdvancedMenu() {
     setShowAdvanced(!showAdvanced);
   }
 
-  function handleSubmit() {
+  useEffect(() => {
+    if (showAdvanced && advancedMenuRef.current) {
+      advancedMenuRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      advancedMenuRef.current.focus();
+    }
+  }, [showAdvanced]);
+
+  async function handleSubmit() {
     const formData = {
       query,
       fingerprint_type: fingerprintType,
@@ -28,11 +36,18 @@ export default function Home() {
     
     console.log('Form submitted with data:', formData);
     // Here you can handle the form submission, e.g., send data to a server
+    const resp = await fetch('/api')
+    console.log('Response:', resp)
   }
 
   const AdvancedMenu = () => {
     return (
-      <div className="relative inline-block text-left w-full text-amber-950 px-10 py-6 mt-5 border border-gray-300 bg-teal-50 rounded-md shadow-sm" id='advanced-menu'>
+      <div 
+        ref={advancedMenuRef}
+        tabIndex="-1"
+        className="relative inline-block text-left w-full text-amber-950 px-10 py-6 mt-5 border border-gray-300 bg-teal-50 rounded-md shadow-sm focus:outline-none focus:ring-2" 
+        id='advanced-menu'
+      >
         <h3 className='text-2xl mb-4'>Advanced Options</h3>
         
         <div className="mt-4">
@@ -144,7 +159,7 @@ export default function Home() {
           <div className="px-4 py-5 bg-white rounded-lg border border-gray-200">
             <p className="font-semibold mb-3">
               To screen custom compounds, list each compound separately with these columns:
-              (please do not include in [compound_id] any commas, spaces or tabs)
+              (please don&apos;t include in [compound_id] any commas, spaces or tabs)
             </p>
             
             <pre className="whitespace-pre font-mono text-sm bg-gray-100 p-4 rounded-lg overflow-x-auto mb-3">
@@ -165,7 +180,7 @@ NC[C@H](O)c1ccc(O)c(O)c1`}
           <div className="px-4 py-5 bg-white rounded-lg border border-gray-200">
             <p className="font-semibold mb-3">
               To screen custom compounds with targets, list each compound with these columns:
-              (please do not include in [compound_id] any commas, spaces or tabs) which will group the compounds by the target id into sets.
+              (please don&apos;t include in [compound_id] any commas, spaces or tabs) which will group the compounds by the target id into sets.
             </p>
             
             <pre className="whitespace-pre font-mono text-sm bg-gray-100 p-4 rounded-lg overflow-x-auto mb-3">

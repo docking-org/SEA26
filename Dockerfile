@@ -24,9 +24,12 @@ RUN conda env create -f environment.yml
 
 COPY backend/ ./
 
-COPY --from=frontend /app/frontend/.next /app/backend/frontend/.next
-COPY --from=frontend /app/frontend/public /app/backend/frontend/public
+COPY run.sh ./
+RUN chmod +x run.sh
 
-EXPOSE 5050
+# COPY --from=frontend /app/frontend/.next /app/backend/frontend/.next
+# COPY --from=frontend /app/frontend/public /app/backend/frontend/public
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5050"]
+EXPOSE 5050 3000
+CMD ["./run.sh"]
+
