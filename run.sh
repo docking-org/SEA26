@@ -9,4 +9,4 @@ npm run build
 npm start
 
 # Wait for both processes (optional in prod, remove for Docker CMD)
-wait
+# wait
