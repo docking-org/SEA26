@@ -10,10 +10,10 @@ COPY frontend/ ./
 RUN npm run build
 
 # Backend build stage
-FROM conda/miniconda3:latest
+FROM condaforge/miniforge3:latest as backend
 
 WORKDIR /app/backend
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl
 
 
 RUN apt-get install -y gcc g++ 
