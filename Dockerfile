@@ -8,28 +8,29 @@ RUN npm install
 
 COPY frontend/ ./
 RUN npm run build
-RUN npm start &
+
 # Backend build stage
 FROM condaforge/miniforge3:latest as backend
-
-WORKDIR /app/backend
+WORKDIR /home/sea
 RUN apt-get update && apt-get install -y curl
 
 
 RUN apt-get install -y gcc g++ 
 RUN apt-get install -y git
 
-COPY environment.yml ./
+ADD environment.yml run.sh ./
 RUN conda env create -f environment.yml
+RUN echo "conda activate sea25" > ~/.bashrc
+ENV PATH /opt/conda/envs/sea25/bin:$PATH
 
-COPY backend/ ./
 
-COPY run.sh ./
+COPY backend ./backend
+COPY --from=frontend /app/frontend/out ./frontend/out
+
+
+
 RUN chmod +x run.sh
+EXPOSE 5050
+ENTRYPOINT "./run.sh"
 
-# COPY --from=frontend /app/frontend/.next /app/backend/frontend/.next
-# COPY --from=frontend /app/frontend/public /app/backend/frontend/public
-
-EXPOSE 5050 3000
-CMD ["./run.sh"]
 

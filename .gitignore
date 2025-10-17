@@ -81,3 +81,4 @@ requirementsTest.txt
 dump.rdb
 .sqlite
 .vscode
+frontend/package-lock.json

@@ -1,6 +1,9 @@
+import os
 from typing import Union
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 app = FastAPI(docs_url="/api/py/docs", openapi_prefix="/api", openapi_url="/api/py/openapi.json")
 
@@ -17,6 +20,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# frontend import
+frontend_path = os.path.join(os.path.dirname(__file__), "../../frontend/out")
+app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str) -> FileResponse:
+    index_path = os.path.join(frontend_path, "index.html")
+    return FileResponse(index_path)
 
 @app.get("/")
 def read_root() -> dict[str, Union[str, int]]:

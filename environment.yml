@@ -110,4 +110,5 @@ dependencies:
   - zstd=1.5.7
   - pip:
     - uvicorn[standard]
+    - fastapi[standard]
 prefix: /nfs/home/khtang/.conda/envs/sea25
