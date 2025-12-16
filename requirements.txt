@@ -4,6 +4,6 @@ celery
 redis
 python-dotenv
 pandas
-rdkit-pypi
 scikit-learn
 plotly
+requests

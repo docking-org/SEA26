@@ -19,7 +19,7 @@ RUN apt-get install -y gcc g++
 RUN apt-get install -y git
 
 ADD requirements.txt run.sh ./
-RUN conda create -c rdkit -n sea25 rdkit -y
+RUN conda create -c conda-forge -n sea25 rdkit python=3.12 -y
 RUN echo "conda activate sea25" > ~/.bashrc
 ENV PATH /opt/conda/envs/sea25/bin:$PATH
 RUN pip install -r requirements.txt
