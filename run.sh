@@ -5,7 +5,7 @@ echo $PWD
 ls
 
 echo "Starting Redis..."
-redis-server --port 6379 &
+redis-server --port 6380 &
 
 # Start the FastAPI backend
 echo "Starting backend..."
