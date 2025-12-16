@@ -5,7 +5,7 @@ echo $PWD
 ls
 
 echo "Starting Redis..."
-redis-server --port 6379 --daemonize yes
+redis-server --port 6380 --daemonize yes
 wait
 
 
