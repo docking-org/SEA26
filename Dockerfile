@@ -18,19 +18,24 @@ RUN apt-get update && apt-get install -y curl
 RUN apt-get install -y gcc g++ 
 RUN apt-get install -y git
 
-ADD environment.yml run.sh ./
-RUN conda env create -f environment.yml
+ADD requirements.txt run.sh ./
+RUN conda create -c rdkit -n sea25 rdkit -y
 RUN echo "conda activate sea25" > ~/.bashrc
 ENV PATH /opt/conda/envs/sea25/bin:$PATH
+RUN pip install -r requirements.txt
+
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_16.x | bash - && \
+    apt-get install -y nodejs
 
 
 COPY backend ./backend
+
 COPY --from=frontend /app/frontend/out ./frontend/out
 
-
+EXPOSE 3001 5050
 
 RUN chmod +x run.sh
-EXPOSE 5050
 ENTRYPOINT "./run.sh"
 
 

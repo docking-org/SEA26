@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+celery
+redis
+python-dotenv
+pandas
+rdkit-pypi
+scikit-learn
+plotly

@@ -1,5 +1,7 @@
 'use client';
+import { redirect } from 'next/navigation';
 import React, { useState, useRef, useEffect } from 'react';
+
 
 export default function Home() {
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -11,6 +13,7 @@ export default function Home() {
   const [querySubsetTargets, setQuerySubsetTargets] = useState('');
   const [queryCustom, setQueryCustom] = useState('');
   const advancedMenuRef = useRef(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   function toggleAdvancedMenu() {
     setShowAdvanced(!showAdvanced);
@@ -23,7 +26,14 @@ export default function Home() {
     }
   }, [showAdvanced]);
 
+  function validateInputs(inputString) {
+    // Basic validation: check if input is not empty and contains valid characters
+    const isValid = inputString.trim().length > 0;
+    return isValid;
+  }
+
   async function handleSubmit() {
+    setIsLoading(true);
     const formData = {
       query,
       fingerprint_type: fingerprintType,
@@ -36,9 +46,24 @@ export default function Home() {
     
     console.log('Form submitted with data:', formData);
     // Here you can handle the form submission, e.g., send data to a server
-    const resp = await fetch('/api')
-    console.log('Response:', resp)
-  }
+    const resp = await fetch('/api/submit', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(formData),
+    });
+    const result = await resp.json();
+    // setIsLoading(false);
+    console.log('Server response:', result.task_id);
+    if (result.task_id) {
+      redirect(`/result/${result.task_id}`);
+    } else {
+      setIsLoading(false);
+      alert('Failed to submit task. Please try again.');
+    }
+
+  } 
 
   const AdvancedMenu = () => {
     return (
@@ -255,7 +280,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
                 <AdvancedMenu />
               ) : (
                 <div className="mt-2">
-                  <input
+                  <textarea
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="Paste SMILES or try example below"
@@ -280,8 +305,9 @@ HDAC1 [O-]C(=O)CCC butyrate`}
             <button
               onClick={handleSubmit}
               className="rounded-md bg-blue-400 px-3.5 py-2.5 text-md font-semibold text-white shadow-xs hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500"
+              disabled={isLoading}
             >
-              Submit
+                  Submit
             </button>
           </div>
         </div>

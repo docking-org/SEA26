@@ -25,7 +25,7 @@ export default function RootLayout({ children }) {
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-          <div className="content bg-[url('/sea.jpg')] bg-cover min-h-screen">
+          <div className="content bg-[url('/sea.jpg')] bg-cover min-h-full text-white">
               <NavBar />
               {children}
               <Footer />
