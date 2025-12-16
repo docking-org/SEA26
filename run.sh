@@ -4,6 +4,9 @@ set -m
 echo $PWD
 ls
 
+echo "Starting Redis..."
+redis-server --port 63790 &
+
 # Start the FastAPI backend
 echo "Starting backend..."
 uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --reload &
