@@ -11,8 +11,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../.env"))
 
 celery = Celery(
     "sea-worker",
-    broker="redis://localhost:6380/0",
-    backend="redis://localhost:6380/1",
+    broker="redis://localhost:6379/0",
+    backend="redis://localhost:6379/1",
 )
 celery.autodiscover_tasks()
 
