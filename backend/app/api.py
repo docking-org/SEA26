@@ -2,9 +2,9 @@ import os
 import shutil
 import json
 import uuid
-import requests
 import pandas as pd
 from typing import Union
+from datetime import datetime
 
 from fastapi import FastAPI, APIRouter
 from fastapi import Request
@@ -93,9 +93,10 @@ async def submit_task(request: Request) -> dict[str, str]:
     os.rename(job_dir, new_job_dir)
     return {"task_id": group_task.id}
 
-@router.get("/result/{sea_score_task_id}")
-def get_task_status(sea_score_task_id: str):
-
+@router.get("/result")
+def get_task_status(request: Request):
+    sea_score_task_id = request.query_params.get("taskId")
+    print(sea_score_task_id)
     sea_result_file = f"{os.getenv('SEA_JOB_DIR')}/{sea_score_task_id}/sea_output/sea_result.tsv"
     if os.path.exists(sea_result_file):
         job_info = {
@@ -219,29 +220,69 @@ def get_task_status(sea_score_task_id: str):
 
     return job_info
 
-@router.get("")
+@router.get("/recent_tasks")
+def get_recent_tasks():
+    recent_tasks = []
+    job_dir = os.getenv('SEA_JOB_DIR')
+    all_tasks = os.listdir(job_dir)
+    for task in all_tasks:
+        time_stamp = datetime.fromtimestamp(os.path.getmtime(f"{job_dir}/{task}"))
+        formatted_time = time_stamp.strftime("%Y-%m-%d %H:%M:%S")
+        task_info = {
+            "task_id": task,
+            "time_stamp": formatted_time
+        }
+        recent_tasks.append(task_info)
+    # sort by time_stamp descending
+    recent_tasks = sorted(recent_tasks, key=lambda x: x['time_stamp'], reverse=True)
+    return {"recent_tasks": recent_tasks}
 
 # download result file
-@router.get("/download/{task_id}")
-def download_result_file(task_id: str):
+@router.get("/download")
+def download_result_file(request: Request):
+    task_id = request.query_params.get("taskId")
     ## zip the result folder
-    job_result_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/result_input"
+    job_result_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
     zip_file = f"{job_result_dir}.zip"
     shutil.make_archive(job_result_dir, 'zip', job_result_dir)
     print("Created zip file:", zip_file)
     return FileResponse(zip_file, media_type='application/zip', filename=f"sea_result_{task_id}.zip")
 
-@router.get("/best_similarity/{task_id}")
-def get_best_similarity_per_target(request: Request, task_id: str):
-    print("Fetching best similarity for task:", task_id)
+@router.get("/best_similarity")
+def get_best_similarity_per_target(request: Request):
+    task_id = request.query_params.get("taskId").split('?')[0]
     target_chembl_id = request.query_params.get("target_chembl_id")
     print("Target ChEMBL ID:", target_chembl_id)
     print("Fetching best similarity for target:", target_chembl_id)
     best_similarity_file = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output/top10_{target_chembl_id}.tsv"
     if not os.path.exists(best_similarity_file):
         return {"error": "Best similarity file not found for the given target."}
-    best_similarity_json = tsv2json(best_similarity_file) 
-    return {"task_id": task_id, "target_chembl_id": target_chembl_id, "best_similarity": best_similarity_json}
+    best_similarity_json = tsv2json(best_similarity_file)
+    # group the data by 'Name' and collect entries
+    result_best_similarity = []
+    query_molecules_set = set()
+    for entry in best_similarity_json:
+        name = entry['Name']
+        if name not in query_molecules_set:
+            query_molecules_set.add(name)
+            result_best_similarity.append({
+                'Name': name,
+                'SMILES': entry['SMILES'],
+                'Similar_Known_Hits': []
+            })
+        for res in result_best_similarity:
+            if res['Name'] == name:
+                res['Similar_Known_Hits'].append({
+                    'Known_Hit_ID': entry['Known_Hit_ID'],
+                    'Known_Hit_SMILES': entry['Known_Hit_SMILES'],
+                    'Tanimoto_Coefficient': entry['Tanimoto_Score']
+                })
+                break
+    return {"task_id": task_id, 
+            "query_compounds": list(query_molecules_set),
+            "target_chembl_id": target_chembl_id, 
+            "best_similarity": best_similarity_json,
+            "grouped_best_similarity": result_best_similarity}
 
 
 
@@ -250,10 +291,14 @@ def get_best_similarity_per_target(request: Request, task_id: str):
 app.include_router(router)
 
 # frontend import
-frontend_path = os.path.join(os.path.dirname(__file__), "../../frontend/out")
-app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+frontend_path = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
+from starlette.exceptions import HTTPException as StarletteHTTPException
+@app.exception_handler(StarletteHTTPException)
+async def spa_exception_handler(request: Request, exc: StarletteHTTPException):
+    # For 404 errors, serve index.html (let React Router handle it)
+    if exc.status_code == 404:
+        return FileResponse(os.path.join(frontend_path, "index.html"))
+    # For other HTTP errors, raise them normally
+    return exc
 
-@app.get("/{full_path:path}")
-async def serve_frontend(full_path: str) -> FileResponse:
-    index_path = os.path.join(frontend_path, "index.html")
-    return FileResponse(index_path)
+app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

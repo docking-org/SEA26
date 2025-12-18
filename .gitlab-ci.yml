@@ -15,4 +15,4 @@ deploy production:
           -d --restart unless-stopped
           -v ${SEA_JOB_DIR}:${SEA_JOB_DIR}
           -v ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
-          -d -p 5050:5050 -p 3001:3001 ${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}-0.1.${CI_JOB_ID}
+          -d -p 5050:5050 ${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}-0.1.${CI_JOB_ID}

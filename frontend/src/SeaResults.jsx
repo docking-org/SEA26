@@ -1,20 +1,21 @@
-'use client';
 import React, { useState, useEffect, useMemo } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
-import Link from 'next/link';
+import { useParams, useSearchParams, Link } from 'react-router-dom';
+import Layout from './components/Layout';
 
 
 export default function Result() {
-    const params = useParams();
-    const searchParams = useSearchParams();
-    const taskId = params.taskId;
-    const targetChemblId = searchParams.get('targetChemblId');
-    
+    const [searchParams] = useSearchParams();
+    const taskId = searchParams.get('taskId') || '';
+    const targetChemblId = searchParams.get('targetChemblId') || '';
     const [percent1Done, setPercent1Done] = useState(0);
     const [result, setResult] = useState([]);
+    const [queryCompounds, setQueryCompounds] = useState([]);
+    const [filteredData, setFilteredData] = useState([]);
     const [heatmapData, setHeatmapData] = useState(null);
+    const [seaData, setSeaData] = useState(null);
     const [hoveredCell, setHoveredCell] = useState(null);
     const [sortBy, setSortBy] = useState('score');
+    const [activeButton, setActiveButton] = useState(false);
 
     // RDkit images
     const [rdkitReady, setRdkitReady] = useState(false);
@@ -48,7 +49,6 @@ export default function Result() {
         
         loadRDKit();
     }, []);
-
     function generateMoleculeSVG(smiles, id, width = 200, height = 200) {
         try {
             if (!window.RDKit || !rdkitReady) {
@@ -78,7 +78,7 @@ export default function Result() {
     }
     useEffect(() => {
         if (heatmapData && rdkitReady && window.RDKit) {
-            heatmapData.forEach(item => {
+            heatmapData.forEach((item) => {
                 if (!moleculeImages[item.Known_Hit_ID]) {
                     generateMoleculeSVG(item.Known_Hit_SMILES, item.Known_Hit_ID);
                 }
@@ -86,11 +86,9 @@ export default function Result() {
         }
     }, [heatmapData, rdkitReady]);
 
-
-
     async function checkTaskStatus(){
         try {
-            const response = await fetch(`/api/result/${taskId}`);
+            const response = await fetch(`/api/result?taskId=${taskId}`);
             const data = await response.json();
             
             if(data.status === 'SUCCESS'){
@@ -112,18 +110,39 @@ export default function Result() {
 
     async function fetchTargetHeatMap(targetChemblId, taskId) {
         try {
-            const response = await fetch(`/api/best_similarity/${taskId}?target_chembl_id=${targetChemblId}`);
+            const response = await fetch(`/api/best_similarity?taskId=${taskId}&target_chembl_id=${targetChemblId}`);
             const data = await response.json();
             console.log('Target heat map data:', data);
+            setSeaData(data.best_similarity);
             setHeatmapData(data.best_similarity);
+            setQueryCompounds(data.query_compounds);
         } catch (error) {
             console.error('Error fetching target heat map data:', error);
         }
     }
 
+    function handleHeatMapDisplay(compoundId) {
+        console.log('handleHeatMapDisplay called with compoundId:', compoundId);
+        if (!compoundId) {
+            console.log('Resetting heatmap data to all compounds');
+            setHeatmapData(seaData);
+            return;
+        }
+        setHeatmapData(seaData); // Reset to all data first
+        if (compoundId)
+            console.log('seaData:', seaData);
+            console.log('Filtering heatmap data for compound:', compoundId);
+            setHeatmapData(seaData.filter(item => item.Name === compoundId));
+            console.log('Filtered heatmap data:', heatmapData);
+            setActiveButton(true);
+        }
+
+
+
+
     // Memoized sorted data
     const sortedData = useMemo(() => {
-        if (!heatmapData || heatmapData.length === 0) return [];
+        if (!heatmapData|| heatmapData.length === 0) return [];
         const sorted = [...heatmapData];
         if (sortBy === 'score') {
             sorted.sort((a, b) => b.Tanimoto_Score - a.Tanimoto_Score);
@@ -189,24 +208,47 @@ export default function Result() {
                 </div>
             );
         }
-
-        const compoundName = heatmapData[0]?.Name || 'Unknown';
-
+        
+        // Render heatmap view
+        // Display all data or data for selected query compound
         return (
+            <Layout>
             <div className="min-h-screen bg-gray-100 p-8">
                 <div className="max-w-7xl mx-auto">
                     <Link 
-                        href={`/result/${taskId}`}
+                        to={`/result?taskId=${taskId}`}
                         className="text-blue-600 hover:underline mb-4 inline-block"
                     >
                         ← Back to all results
                     </Link>
 
                     <div className="bg-white rounded-lg shadow-lg p-6 mt-4">
-                        <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-6 gap-4">
+                     
+                        <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-4">
                             <div>
-                                <h2 className="text-2xl font-bold text-gray-800">Tanimoto Similarity Heatmap</h2>
-                                <p className="text-sm text-gray-600 mt-1">Query Compound: {compoundName}</p>
+                                <h2 className="text-2xl font-bold text-gray-800">Tanimoto Similarity Results</h2>
+                                <div className="flex flex-col md:flex-row md:items-center mb-6 gap-4">
+                                    <p className="text-sm text-gray-600 mr-4">Query Compound:</p>
+                                    <select
+                                        className="px-3 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
+                                        onChange={(e) => {
+                                        const selectedCompound = e.target.value;
+                                        if (selectedCompound === "all") {
+                                            handleHeatMapDisplay(null); // Display all compounds
+                                        } else {
+                                            handleHeatMapDisplay(selectedCompound); // Display selected compound
+                                        }
+                                        }}
+                                    >
+                                        <option value="all">All query compounds </option>
+                                        {queryCompounds.map((compound) => (
+                                        <option key={compound} value={compound}>
+                                            {compound}
+                                        </option>
+                                        ))}
+                                    </select>
+                                
+                                    </div>
                                 <p className="text-sm text-gray-600">Target: {targetChemblId}</p>
                             </div>
                             <div className="flex gap-2">
@@ -337,12 +379,14 @@ export default function Result() {
                     </div>
                 </div>
             </div>
+            </Layout>
         );
     }
 
     // Main results page
     return (
-        <div className="flex-col items-center justify-center min-h-screen py-2 bg-transparent backdrop-blur-md shadow-lg text-gray-700">
+        <Layout>
+        <div className="flex-col items-center justify-center min-h-screen py-2 text-gray-700">
             <div className="mt-5 px-10 py-5 bg-gray-50 " >
                 <h1 className="text-2xl  font-bold mb-4">Result Page</h1>
                 <p className="mb-2">Your task ID is: {taskId}</p>
@@ -376,7 +420,7 @@ export default function Result() {
                 {percent1Done === 100 && result.length > 0 && (
                     <div>
                         <a
-                            href={`/api/download/${taskId}`}
+                            href={`/api/download?taskId=${taskId}`}
                             className="inline-block my-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-bold no-underline"
                             download
                         >
@@ -409,12 +453,14 @@ export default function Result() {
                                                     className="px-4 py-2 text-sm text-gray-700 border-b"
                                                 >
                                                     {i === 0 ? (
-                                                        <Link 
-                                                            href={`/result/${taskId}?targetChemblId=${value}`} 
+                                                        <a 
+                                                            href={`/result?taskId=${taskId}&targetChemblId=${value}`} 
                                                             className="text-blue-600 hover:text-blue-800 underline"
+                                                            target='_blank'
+                                                            rel="noopener noreferrer"
                                                         >
                                                             {value}
-                                                        </Link>
+                                                        </a>
                                                     ) : (
                                                         value
                                                     )}
@@ -429,5 +475,6 @@ export default function Result() {
                 )}
             </div>
         </div>
+        </Layout>
     );
 }
