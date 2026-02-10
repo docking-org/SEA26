@@ -416,6 +416,11 @@ export default function Result() {
                         {percent1Done === 100 ? 'Task completed successfully!' : 'Please wait while we process your request...'}
                     </p>
                 </div>
+                {percent1Done === 100 && result.length === 0 && (
+                    <div className="p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
+                        No results found for this task.
+                    </div>
+                )}
            
                 {percent1Done === 100 && result.length > 0 && (
                     <div>
@@ -448,7 +453,7 @@ export default function Result() {
                                         ))}
                                     </tr>
                                 </thead>
-                                <tbody>
+                                <tbody> 
                                     {result.map((item, index) => (
                                         <tr
                                             key={index}
