@@ -1,5 +1,6 @@
 from celery import Celery, current_task, shared_task, chord, current_app, group
 from celery.result import GroupResult
+from celery.schedules import crontab
 import pandas as pd
 import numpy as np
 from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score
@@ -60,14 +61,6 @@ def aggregate_sea_results(results, input, list_chembl, save_folder, parent_task_
     sea_result = sea_result[sea_result["p(P_value)"] > 3]
     sea_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
     print("SEA analysis completed.")
-    print(input)
-    # Now run similarity tasks
-    # async_similarity_results = []
-    # for idx in np.arange(sea_result.shape[0]):
-    #     target_chembl_id = sea_result['Target_Chembl_ID'].to_list()[idx]
-    #     async_similarity_result = sea_similarity_score.delay(input, target_chembl_id, save_folder)
-    #     async_similarity_results.append(async_similarity_result)
-    # print("Similarity analysis completed.")
     return sea_result.to_dict(orient="records")
 
 
@@ -131,13 +124,34 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
     return "Similarity calculation completed for target: {}".format(target_chembl_id)
 
 
+
+
 @celery.task(name="main.cleanup_task")
 def cleanup_task(save_folder):
+    # keep the last 30 jobs in the folder or remove the job folder what are older than 1 day
+    if len(os.path.listdir(save_folder)) < 30:
+        return "No cleanup needed."
+    
     import shutil
-    shutil.rmtree(save_folder)
-    print(f"Cleaned up temporary folder: {save_folder}")
+    for dir in os.path.listdir(save_folder):
+        dir_path = os.path.join(save_folder, dir)
+        if os.path.isdir(dir_path):
+            dir_time = os.path.getmtime(dir_path)
+            import time
+            if (time.time() - dir_time) > 86400:  # 1 day in seconds
+                # shutil.rmtree(dir_path)
+                print(f"Removed old job folder: {dir_path}")
     return "Cleanup completed."
 
+celery.conf.beat_schedule = {
+    'daily-cleanup-task': {
+        'task': 'main.cleanup_task',
+        'schedule': crontab(minute='*/2'),
+        'args': (os.getenv("SEA_SAVE_FOLDER"),),
+    },
+}
+
+celery.conf.timezone = 'UTC'  
     
 
 

@@ -17,6 +17,7 @@ function HomePage() {
   const advancedMenuRef = useRef(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isValid, setIsValid] = useState(true);
+  const [hideAdvanceMenu, sethideAdvanceMenu] = useState(true);
 
   function toggleAdvancedMenu() {
     setShowAdvanced(!showAdvanced);
@@ -274,14 +275,22 @@ HDAC1 [O-]C(=O)CCC butyrate`}
           <div className="mt-8">
             <div>
               <h2 className="text-3xl font-medium text-pretty text-green-100 sm:text-xl/8">Run SEA</h2>
-              <button 
-                type="button"
-                onClick={toggleAdvancedMenu}
-                className="text-md font-semibold text-white hover:underline mt-2"
-              >
-                Advanced Options <span aria-hidden="true">→</span>
-              </button>
+              <div>
+              {hideAdvanceMenu ? (
+                <p></p>
 
+              ) : (
+                
+                <button 
+                  type="button"
+                  onClick={toggleAdvancedMenu}
+                  className="text-md font-semibold text-white hover:underline mt-2"
+                >
+                  Advanced Options <span aria-hidden="true">→</span>
+              </button>
+              )}
+              </div>
+            
               <div>
                 {showAdvanced ? (
                   <AdvancedMenu />

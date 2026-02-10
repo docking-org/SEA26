@@ -426,6 +426,13 @@ export default function Result() {
                         >
                             Download Results (ZIP)
                         </a>
+                        &nbsp;
+                        <a 
+                            href={`/compoundVStarget?taskId=${taskId}`} 
+                            className="inline-block my-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-bold no-underline"
+                        >
+                            Compound VS Targets
+                        </a>
                         <h2 className="mt-6 mb-2 text-xl font-semibold">Results:</h2>
                         <div className="overflow-x-auto rounded-lg shadow">
                             <table className="min-w-full divide-y divide-gray-200 bg-white">

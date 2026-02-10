@@ -1,10 +1,11 @@
 import os
 import shutil
-import json
 import uuid
+import json
 import pandas as pd
 from typing import Union
 from datetime import datetime
+from collections import defaultdict
 
 from fastapi import FastAPI, APIRouter
 from fastapi import Request
@@ -48,15 +49,9 @@ app.add_middleware(
 task_logger = get_task_logger(__name__)
 
 
-
 @router.get("" or "/")
 def read_root() -> dict[str, Union[str, int]]:
-  
     return {"msg": "Welcome to SEA", "version": 1}
-
-@router.get("/items/{item_id}")
-def read_item(item_id: int, q: Union[str, None] = None) -> dict[str, Union[int, str, None]]:
-    return {"item_id": item_id, "q2": q}
 
 @router.post("/submit")
 async def submit_task(request: Request) -> dict[str, str]:
@@ -70,7 +65,6 @@ async def submit_task(request: Request) -> dict[str, str]:
     input_file = f"input.smi"
     with open(input_file, "w") as f:
         f.write(input["query"])
-
     list_chembl = []
     for file in os.listdir(os.getenv("SEA_DATA_FOLDER")):
         full_file_name = os.path.join(os.getenv("SEA_DATA_FOLDER"), file)
@@ -95,9 +89,8 @@ async def submit_task(request: Request) -> dict[str, str]:
 
 @router.get("/result")
 def get_task_status(request: Request):
-    sea_score_task_id = request.query_params.get("taskId")
-    print(sea_score_task_id)
-    sea_result_file = f"{os.getenv('SEA_JOB_DIR')}/{sea_score_task_id}/sea_output/sea_result.tsv"
+    task_id = request.query_params.get("taskId")
+    sea_result_file = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output/sea_result.tsv"
     if os.path.exists(sea_result_file):
         job_info = {
             "stage" : 2,
@@ -107,17 +100,17 @@ def get_task_status(request: Request):
         }
         table_result = tsv2json(sea_result_file)
         job_info["result"] = table_result
-        # looad job info
-        input_f = f"{os.getenv('SEA_JOB_DIR')}/{sea_score_task_id}/input.smi"
+        # load job info
+        input_f = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi"
         smiles_test = [f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" for x in open(input_f).read().splitlines() if x.strip()]
         job_info['input'] = smiles_test       
         return job_info
     
     # Retrieve the task using its ID
-    sea_analysis_group_task = celery.GroupResult.restore(sea_score_task_id)
+    sea_analysis_group_task = celery.GroupResult.restore(task_id)
     print("Restored task:", sea_analysis_group_task)
     # looad job info
-    input_f = f"{os.getenv('SEA_JOB_DIR')}/{sea_score_task_id}/input.smi"
+    input_f = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi"
     smiles_test = [f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" for x in open(input_f).read().splitlines() if x.strip()]
     if not sea_analysis_group_task:
         return {"state": "UNKNOWN", "status": "No task found with the given ID."}
@@ -133,6 +126,7 @@ def get_task_status(request: Request):
                 "progress": progress,
             }
     elif progress == 100:
+        heatmap_data = []
         job_info = {
             "stage" : 1,
             "status": "SUCCESS",
@@ -144,7 +138,7 @@ def get_task_status(request: Request):
         for result in sea_analysis_group_task.results:
             job_results.append(result.get())
         target_name_list, z_score_summary, p_value_summary = zip(*job_results)
-        save_folder = f"{os.getenv('SEA_JOB_DIR')}/{sea_score_task_id}/sea_output"
+        save_folder = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
         if not os.path.exists(save_folder):
             _mkdir_(save_folder)
         list_chembl = []
@@ -164,11 +158,15 @@ def get_task_status(request: Request):
         table_result = sea_result.to_dict(orient="records")
         job_info["result"] = table_result
         job_info['stage'] = 2
+
+     
         
         # calculate similarity scores for top targets synchronously for now
         data_test, mol_test = get_smiles_property(smiles_test)
         for idx in np.arange(sea_result.shape[0]):
             target_chembl_id = sea_result["Target_Chembl_ID"].tolist()[idx]
+            print("Target ID " + target_chembl_id)
+            
             known = pd.read_csv(f"{os.getenv("SEA_DATA_FOLDER")}/{target_chembl_id}.tsv", sep = "\t", index_col = 0)
             similarity = known_test_tc(known, data_test, fpSize=2048)
             result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(), 
@@ -186,7 +184,9 @@ def get_task_status(request: Request):
             best_similarity = best_similarity.sort_values(by = ["Tanimoto_Coefficient"], ascending = False, ignore_index = True)
             best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.7]
             best_similarity.to_csv(f"{save_folder}/best_similar_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
-            
+
+
+
             # get top 10 similarity matrix
             summary_tc = []
             summary_ref = []
@@ -197,7 +197,9 @@ def get_task_status(request: Request):
             ref_compound = list(result.columns)
             known_compound = list(result.index)
             result["Known"] = known["molecule_chembl_id"].tolist()
-            for idxC in np.arange(result.shape[1] - 1) : 
+ 
+            for idxC in np.arange(result.shape[1] - 1) :
+                print(ref_compound[idxC]) 
                 top10 = result.sort_values(by = ["{}".format(ref_compound[idxC])], ascending = False, ignore_index = True).head(10)
                 summary_tc += top10["{}".format(ref_compound[idxC])].tolist() 
                 summary_ref += [ref_compound[idxC]] * top10.shape[0] 
@@ -213,10 +215,46 @@ def get_task_status(request: Request):
             similarity_matrix = similarity_matrix.sort_values(by = ["Name", "Tanimoto_Score"], ascending = [True, False], ignore_index = True)
         
             similarity_matrix.to_csv(f"{save_folder}/top10_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
+            similarity_matrix['Target_ChEMBL_ID'] = known["target_chembl_id"].tolist()[0]
+
+            heatmap_data += similarity_matrix.to_dict(orient="records")
+        
+
             
         job_info["msg"] = "SEA analysis and similarity calculations completed."
         job_info["progress"] = 100
-        job_info['input'] = smiles_test       
+        job_info['input'] = smiles_test     
+
+        # process heatmap data
+        # Group by Name and SMILES
+        group_fields = {"Name", "SMILES"}
+        grouped_dict = {}
+
+        for item in heatmap_data:
+            key = (item["Name"], item["SMILES"])
+            if key not in grouped_dict:
+                grouped_dict[key] = []   
+            hit = {k: item[k] for k in item if k not in group_fields}
+            grouped_dict[key].append(hit)
+        result = []
+        for (name, smiles), hits in grouped_dict.items():
+            grouped_target_hits = {}
+            for hit in hits:
+                key = hit["Target_ChEMBL_ID"]
+                if key not in grouped_target_hits:
+                    grouped_target_hits[key] = []
+                grouped_target_hits[key].append({
+                    "Known_Hit_ID" : hit["Known_Hit_ID"],
+                    "Known_Hit_SMILES" : hit["Known_Hit_SMILES"],
+                    "Tanimoto_Score" : hit["Tanimoto_Score"]
+                })
+            result.append({
+                "Name": name,
+                "SMILES": smiles,
+                "hits": grouped_target_hits
+            })
+            with open(".heatmap", "w") as hm:
+                json.dump(result, hm, indent=4)
 
     return job_info
 
@@ -247,6 +285,19 @@ def download_result_file(request: Request):
     shutil.make_archive(job_result_dir, 'zip', job_result_dir)
     print("Created zip file:", zip_file)
     return FileResponse(zip_file, media_type='application/zip', filename=f"sea_result_{task_id}.zip")
+
+@router.get("/compound_vs_target")
+def compound_vs_target(request : Request):
+    task_id = request.query_params.get("task_id").split("?")[0]
+    # return task_id
+    heatmap_file = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/.heatmap"
+    if not os.path.exists(heatmap_file):
+        return {"error", "Heatmap data not found"}
+    # read json 
+    with open(heatmap_file) as hm_file:
+        heatmap_data = json.load(hm_file)
+    # print(json.dumps(heatmap_data, indent=4))
+    return heatmap_data
 
 @router.get("/best_similarity")
 def get_best_similarity_per_target(request: Request):

@@ -7,6 +7,7 @@ import './index.css'
 import HomePage from "./HomePage";
 import Result from './SeaResults';
 import RecentTasks from './RecentTasks';
+import CompoundVsTarget from './CompoundVSTarget';
 
 
 const router = createBrowserRouter([
@@ -23,6 +24,11 @@ const router = createBrowserRouter([
     path: "/recentTasks",
     element: <RecentTasks />,
   },
+  {
+    path:"/compoundVStarget",
+    element : <CompoundVsTarget />,
+  }
+
 ]);
 
 ReactDOM.createRoot(document.getElementById('root')).render(
