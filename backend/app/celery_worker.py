@@ -127,27 +127,28 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
 
 
 @celery.task(name="main.cleanup_task")
-def cleanup_task(save_folder):
+def cleanup_task(*args, **kwargs):
+   
+    save_folder = os.environ.get("SEA_JOB_DIR")
     # keep the last 30 jobs in the folder or remove the job folder what are older than 1 day
-    if len(os.path.listdir(save_folder)) < 30:
+    if len(os.listdir(save_folder)) < 3:
         return "No cleanup needed."
     
     import shutil
-    for dir in os.path.listdir(save_folder):
+    for dir in os.listdir(save_folder):
         dir_path = os.path.join(save_folder, dir)
         if os.path.isdir(dir_path):
             dir_time = os.path.getmtime(dir_path)
             import time
-            if (time.time() - dir_time) > 86400:  # 1 day in seconds
-                # shutil.rmtree(dir_path)
+            if (time.time() - dir_time) > 86400 and len(os.listdir(save_folder) > 3):  # 1 day in seconds
+                shutil.rmtree(dir_path)
                 print(f"Removed old job folder: {dir_path}")
     return "Cleanup completed."
 
 celery.conf.beat_schedule = {
     'daily-cleanup-task': {
         'task': 'main.cleanup_task',
-        'schedule': crontab(minute='*/2'),
-        'args': (os.getenv("SEA_SAVE_FOLDER"),),
+        'schedule': crontab(hour=0, minute=0),  # Run daily at midnight
     },
 }
 

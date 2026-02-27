@@ -2,19 +2,6 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Layout from './components/Layout';
 
-// sample data
-// [
-//     {
-//         "Name": "caffeine",
-//         "SMILES": "Cn1c(=O)c2c(ncn2C)n(C)c1=O",
-//         "hits": { ... }
-//     },
-//     {
-//         "Name": "aspirin",
-//         "SMILES": "...",
-//         "hits": { ... }
-//     }
-// ]
 
 // Molecule SVG component using RDKit.js
 function MoleculeSVG({ smiles, width = 200, height = 150 }) {
@@ -155,7 +142,6 @@ export default function CompoundVsTarget() {
             const response = await fetch(`/api/compound_vs_target?task_id=${taskId}`);
             if (response.ok) {
                 const data = await response.json();
-                console.log("Fetched data:", data);
                 setAllCompounds(data);
                 setSelectedCompoundIndex(0);
             } else {
@@ -164,7 +150,6 @@ export default function CompoundVsTarget() {
             }
         } catch (err) {
             setError(err.message);
-            console.error("Error:", err);
         } finally {
             setLoading(false);
         }
@@ -189,9 +174,9 @@ export default function CompoundVsTarget() {
         return { targets, hitsPerTarget, maxHits };
     }, [heatmapData]);
 
-    const getColorForScore = (score) => {
+    const getColorForScore = (score, hit, target) => {
         if (score === undefined) return '#ffffff';
-        const intensity = Math.min(score * 5, 1);
+        const intensity = Math.min(score, 1);
         const gray = Math.round(255 * (1 - intensity));
         return `rgb(${gray}, ${gray}, ${gray})`;
     };
@@ -246,7 +231,8 @@ export default function CompoundVsTarget() {
 
     return (
         <Layout>
-            <h1>Compound vs Target Heatmap</h1>
+            <h1 className="text-2xl font-bold">Compound vs Target Heatmap</h1>
+            <br />
             <p>Task ID: {taskId}</p>
             
             {/* Compound Selector Dropdown */}
@@ -314,7 +300,7 @@ export default function CompoundVsTarget() {
                                                         onMouseEnter={(e) => handleMouseEnter(e, target, hit)}
                                                         onMouseLeave={handleMouseLeave}
                                                         style={{ 
-                                                            backgroundColor: getColorForScore(hit?.score),
+                                                            backgroundColor: getColorForScore(hit?.score, hit, target),
                                                             minWidth: `${cellSize.width}px`,
                                                             width: `${cellSize.width}px`,
                                                             height: `${cellSize.height}px`,

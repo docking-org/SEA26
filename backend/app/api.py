@@ -70,7 +70,9 @@ async def submit_task(request: Request) -> dict[str, str]:
         full_file_name = os.path.join(os.getenv("SEA_DATA_FOLDER"), file)
         if os.path.isfile(full_file_name):
             list_chembl.append(full_file_name)
+
     smiles_test = [f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" for x in input["query"].splitlines() if x.strip()]
+    
     save_folder = f"{job_dir}/sea_output"
     _mkdir_(save_folder)  
     # create group of tasks for each target
