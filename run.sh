@@ -1,7 +1,6 @@
 #!/bin/bash
 
 set -m
-echo $PWD
 ls
 
 echo "Starting Redis..."

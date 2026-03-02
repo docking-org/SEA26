@@ -18,21 +18,73 @@ function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isValid, setIsValid] = useState(true);
   const [hideAdvanceMenu, sethideAdvanceMenu] = useState(true);
+  const [errorMessage, setErrorMessage] = useState(''); // NEW: error message state
 
   function toggleAdvancedMenu() {
     setShowAdvanced(!showAdvanced);
   }
 
+  // NEW: Process input to add compound IDs if missing
+  function processInput(inputString) {
+    if (!inputString || inputString.trim().length === 0) {
+      return inputString;
+    }
+
+    const lines = inputString.trim().split('\n');
+    const processedLines = lines.map((line, index) => {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) return trimmedLine; // Skip empty lines
+      
+      // Split by whitespace (spaces or tabs)
+      const columns = trimmedLine.split(/\s+/);
+      
+      // If only 1 column (just SMILES or ZINC ID), add a unique compound ID
+      if (columns.length === 1) {
+        const compoundId = `compound_${index + 1}`;
+        return `${trimmedLine} ${compoundId}`;
+      }
+      
+      // Otherwise, keep the original line
+      return trimmedLine;
+    });
+
+    return processedLines.join('\n');
+  }
+
+  // NEW: improved validation function
   function validateInputs(inputString) {
-    if (!inputString) return setIsValid(false);
-    if (inputString.trim().length > 0) return setIsValid(true);
-    if (inputString.split(' ').length < 2) return setIsValid(false);
+    if (!inputString || inputString.trim().length === 0) {
+      setIsValid(false);
+      setErrorMessage('Please enter at least one SMILES or compound.');
+      return false;
+    }
+    setIsValid(true);
+    setErrorMessage('');
+    return true;
+  }
+
+  // NEW: clear error when user starts typing
+  function handleQueryChange(e) {
+    setQuery(e.target.value);
+    if (errorMessage) {
+      setErrorMessage('');
+      setIsValid(true);
+    }
   }
 
   async function handleSubmit() {
+    // Validate before submitting
+    if (!validateInputs(query)) {
+      return;
+    }
+
     setIsLoading(true);
+    
+    // Process input to add compound IDs if needed
+    const processedQuery = processInput(query);
+    
     const formData = {
-      query,
+      query: processedQuery,
       fingerprint_type: fingerprintType,
       reference_target: referenceTarget,
       reference_custom_targets: referenceCustomTargets,
@@ -41,30 +93,27 @@ function HomePage() {
       query_custom: queryCustom
     };
     console.log('Form submitted with data:', formData);
-    validateInputs(formData.query);
-    if (!isValid) {
+    
+    try {
+      const resp = await fetch('/api/submit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData),
+      });
+      const result = await resp.json();
+      console.log('Server response:', result.task_id);
+      if (result.task_id) {
+        navigate(`/result?taskId=${result.task_id}`);
+      } else {
+        setIsLoading(false);
+        setErrorMessage('Failed to submit task. Please try again.');
+      }
+    } catch (error) {
       setIsLoading(false);
-      alert('Invalid input. Please check your query and try again.');
-      return;
+      setErrorMessage('Network error. Please try again.');
     }
-    // Here you can handle the form submission, e.g., send data to a server
-    const resp = await fetch('/api/submit', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(formData),
-    });
-    const result = await resp.json();
-    // setIsLoading(false);
-    console.log('Server response:', result.task_id);
-    if (result.task_id) {
-      navigate(`/result?taskId=${result.task_id}`);
-    } else {
-      setIsLoading(false);
-      alert('Failed to submit task. Please try again.');
-    }
-
   } 
   
 
@@ -298,10 +347,18 @@ HDAC1 [O-]C(=O)CCC butyrate`}
                   <div className="mt-2">
                     <textarea
                       value={query}
-                      onChange={(e) => setQuery(e.target.value)}
+                      onChange={handleQueryChange}
                       placeholder="Paste SMILES or try example below"
-                      className="mt-2 py-2 px-3 w-full border backdrop-blur-2xl border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-100"
+                      className={`mt-2 py-2 px-3 w-full border backdrop-blur-2xl rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-100 ${
+                        !isValid ? 'border-red-500 bg-red-50' : 'border-gray-300'
+                      }`}
                     />
+                    {/* Error message display */}
+                    {errorMessage && (
+                      <p className="mt-2 text-red-400 text-sm font-medium">
+                        ⚠️ {errorMessage}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -328,8 +385,12 @@ HDAC1 [O-]C(=O)CCC butyrate`}
               ) : (
                 <button
                   onClick={handleSubmit}
-                  className="rounded-md bg-blue-400 px-3.5 py-2.5 text-md font-semibold text-white shadow-xs hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500"
-                  disabled={isLoading}
+                  disabled={isLoading || query.trim().length === 0}
+                  className={`rounded-md px-3.5 py-2.5 text-md font-semibold text-white shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 ${
+                    query.trim().length === 0 
+                      ? 'bg-gray-400 cursor-not-allowed' 
+                      : 'bg-blue-400 hover:bg-indigo-400'
+                  }`}
                 >
                   Submit
                 </button>

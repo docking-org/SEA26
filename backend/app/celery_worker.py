@@ -135,12 +135,12 @@ def cleanup_task(*args, **kwargs):
         return "No cleanup needed."
     
     import shutil
+    import time
     for dir in os.listdir(save_folder):
         dir_path = os.path.join(save_folder, dir)
         if os.path.isdir(dir_path):
             dir_time = os.path.getmtime(dir_path)
-            import time
-            if (time.time() - dir_time) > 86400 and len(os.listdir(save_folder) > 3):  # 1 day in seconds
+            if (time.time() - dir_time) > 86400 and len(os.listdir(save_folder)) > 3:  # 1 day 
                 shutil.rmtree(dir_path)
                 print(f"Removed old job folder: {dir_path}")
     return "Cleanup completed."
@@ -152,12 +152,7 @@ celery.conf.beat_schedule = {
     },
 }
 
-celery.conf.timezone = 'UTC'  
-    
-
-
-
-    
+celery.conf.timezone = 'UTC'
 
 
 
@@ -166,4 +161,8 @@ celery.conf.timezone = 'UTC'
 
 
 
-    
+
+
+
+
+

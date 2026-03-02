@@ -6,9 +6,10 @@ import pandas as pd
 from typing import Union
 from datetime import datetime
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, APIRouter
-from fastapi import Request
+from fastapi import Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -26,10 +27,26 @@ from .helper import get_smiles_property, known_test_tc, tsv2json
 env_path = os.path.join(os.path.dirname(__file__), "../.env")
 load_dotenv(env_path)
 
-# app = FastAPI(docs_url="/api/py/docs", openapi_prefix="/api", openapi_url="/api/py/openapi.json")
+# Cache the list of target files at startup
+_TARGET_FILES_CACHE = None
+
+def get_target_files():
+    """Cache and return list of target files."""
+    global _TARGET_FILES_CACHE
+    if (_TARGET_FILES_CACHE is None):
+        data_folder = os.getenv("SEA_DATA_FOLDER")
+        _TARGET_FILES_CACHE = [
+            os.path.join(data_folder, f) 
+            for f in os.listdir(data_folder) 
+            if os.path.isfile(os.path.join(data_folder, f))
+        ]
+    return _TARGET_FILES_CACHE
+
+# Pre-load target files on import
+get_target_files()
+
 router = APIRouter(prefix="/api")
 app = FastAPI()
-
 
 # Allow requests from your frontend origin
 origins = [
@@ -39,12 +56,11 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,          # You can set ["*"] for all (not recommended in prod)
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 task_logger = get_task_logger(__name__)
 
@@ -53,41 +69,45 @@ task_logger = get_task_logger(__name__)
 def read_root() -> dict[str, Union[str, int]]:
     return {"msg": "Welcome to SEA", "version": 1}
 
+
 @router.post("/submit")
 async def submit_task(request: Request) -> dict[str, str]:
-    input = await request.json()
-    print("Received input:", input)
-    # set up celery task
-    parent_task_id = str(uuid.uuid4())
-    job_dir = f"{os.getenv('SEA_JOB_DIR')}/{parent_task_id}"
-    _mkdir_(job_dir)
-    os.chdir(job_dir)
-    input_file = f"input.smi"
-    with open(input_file, "w") as f:
-        f.write(input["query"])
-    list_chembl = []
-    for file in os.listdir(os.getenv("SEA_DATA_FOLDER")):
-        full_file_name = os.path.join(os.getenv("SEA_DATA_FOLDER"), file)
-        if os.path.isfile(full_file_name):
-            list_chembl.append(full_file_name)
-
-    smiles_test = [f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" for x in input["query"].splitlines() if x.strip()]
+    input_data = await request.json()
     
-    save_folder = f"{job_dir}/sea_output"
-    _mkdir_(save_folder)  
-    # create group of tasks for each target
+    # Parse SMILES first (fast)
+    smiles_test = [
+        f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" 
+        for x in input_data["query"].splitlines() 
+        if x.strip()
+    ]
+    
+    # Get cached target files (instant)
+    list_chembl = get_target_files()
+    
+    # Create and submit task group FIRST to get the ID
     task_group = group(
-        sea_target_score.s(
-            input=smiles_test,
-            target=target,
-        )     for target in list_chembl 
+        sea_target_score.s(input=smiles_test, target=target)
+        for target in list_chembl
     )
-    group_task = task_group.apply_async() # submit group task
+    group_task = task_group.apply_async()
     group_task.save()
-    # rename the job directory to include celery task id
-    new_job_dir = f"{os.getenv('SEA_JOB_DIR')}/{group_task.id}"
-    os.rename(job_dir, new_job_dir)
-    return {"task_id": group_task.id}
+    
+    # Now create directory with the actual task ID (no rename needed)
+    task_id = group_task.id
+    job_dir = os.path.join(os.getenv('SEA_JOB_DIR'), task_id)
+    os.makedirs(job_dir, exist_ok=True)
+    
+    # Write input file
+    input_file = os.path.join(job_dir, "input.smi")
+    with open(input_file, "w") as f:
+        f.write(input_data["query"])
+    
+    # Create output directory
+    save_folder = os.path.join(job_dir, "sea_output")
+    os.makedirs(save_folder, exist_ok=True)
+    
+    return {"task_id": task_id}
+
 
 @router.get("/result")
 def get_task_status(request: Request):
@@ -111,28 +131,41 @@ def get_task_status(request: Request):
     # Retrieve the task using its ID
     sea_analysis_group_task = celery.GroupResult.restore(task_id)
     print("Restored task:", sea_analysis_group_task)
-    # looad job info
+    
+    # Load job info
     input_f = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi"
     smiles_test = [f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" for x in open(input_f).read().splitlines() if x.strip()]
+    
     if not sea_analysis_group_task:
         return {"state": "UNKNOWN", "status": "No task found with the given ID."}
+    
     completed = sea_analysis_group_task.completed_count()
     total = len(sea_analysis_group_task.results)
     progress = int((completed / total) * 100)
 
+    # Initialize job_info for all cases
+    job_info = {
+        "stage": 1,
+        "status": "PENDING",
+        "msg": "SEA analysis is starting...",
+        "progress": progress,
+        "input": smiles_test
+    }
+
     if progress > 0 and progress < 100:
         job_info = {
-                "stage" : 1,
-                "status": "PROGRESS",
-                "msg" : f"SEA analysis in progress: {completed} out of {total} targets completed.",
-                "progress": progress,
-            }
+            "stage": 1,
+            "status": "PROGRESS",
+            "msg": f"SEA analysis in progress: {completed} out of {total} targets completed.",
+            "progress": progress,
+            "input": smiles_test
+        }
     elif progress == 100:
         heatmap_data = []
         job_info = {
-            "stage" : 1,
+            "stage": 1,
             "status": "SUCCESS",
-            "msg" : f"SEA analysis completed for all {total} targets.",
+            "msg": f"SEA analysis completed for all {total} targets.",
             "progress": progress,
         }
         # collect results from all subtasks
@@ -255,8 +288,9 @@ def get_task_status(request: Request):
                 "SMILES": smiles,
                 "hits": grouped_target_hits
             })
-            with open(".heatmap", "w") as hm:
-                json.dump(result, hm, indent=4)
+        heatmap_file = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/.heatmap"
+        with open(heatmap_file, "w") as hm:
+            json.dump(result, hm, indent=4)
 
     return job_info
 

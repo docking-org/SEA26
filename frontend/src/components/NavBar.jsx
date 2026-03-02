@@ -17,7 +17,7 @@ export default function NavBar() {
                     {/* Navigation Links */}
                     <div className="hidden md:flex">
                         <div className="ml-10 flex items-center space-x-6 lg:space-x-8">
-                            <a href="/recentTasks" className="text-gray-900 hover:text-teal-800 px-3 py-2 rounded-md text-sm font-medium">Recent Jobs</a>
+                            <a href="/recentTasks" className="text-teal-200 hover:text-teal-50 px-3 py-2 rounded-md text-sm font-medium">Recent Jobs</a>
                         </div>
                         </div>
                     <button className="md:hidden p-2 text-2xl"
