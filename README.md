@@ -23,7 +23,7 @@ How to set up SEA for development
 3.  Run these commands in separate terminal
     
      <pre>uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --reload<pre>
-     <pre>celery -A backend.app.celery_worker worker --loglevel=info --concurrency=20  --max-tasks-per-child=30</pre>
+     <pre>celery -A backend.app.celery_worker worker --beat -s /tmp/sea-celerybeat-schedule --loglevel=info --concurrency=20  --max-tasks-per-child=30</pre>
 
 4. Set up React App
      <pre>
