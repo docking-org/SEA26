@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import uuid
 import json
@@ -30,20 +31,30 @@ load_dotenv(env_path)
 # Cache the list of target files at startup
 _TARGET_FILES_CACHE = None
 
+# load target files into cache at startup
+
+
 def get_target_files():
     """Cache and return list of target files."""
     global _TARGET_FILES_CACHE
     if (_TARGET_FILES_CACHE is None):
         data_folder = os.getenv("SEA_DATA_FOLDER")
-        _TARGET_FILES_CACHE = [
-            os.path.join(data_folder, f) 
-            for f in os.listdir(data_folder) 
-            if os.path.isfile(os.path.join(data_folder, f))
-        ]
+        _TARGET_FILES_CACHE = []
+        for folder in os.listdir(data_folder):
+            if not os.path.isdir(os.path.join(data_folder, folder)):
+                continue
+            for f in os.listdir(os.path.join(data_folder, folder)):
+                full_file_name = os.path.join(data_folder, folder, f)
+                if os.path.isfile(full_file_name) and full_file_name.endswith(".tsv"): 
+                    _TARGET_FILES_CACHE.append(full_file_name)
+                else:
+                    continue
     return _TARGET_FILES_CACHE
 
 # Pre-load target files on import
 get_target_files()
+
+
 
 router = APIRouter(prefix="/api")
 app = FastAPI()
@@ -81,8 +92,8 @@ async def submit_task(request: Request) -> dict[str, str]:
         if x.strip()
     ]
     
-    # Get cached target files (instant)
-    list_chembl = get_target_files()
+    # Get cached target files 
+    list_chembl = _TARGET_FILES_CACHE
     
     # Create and submit task group FIRST to get the ID
     task_group = group(
@@ -101,7 +112,6 @@ async def submit_task(request: Request) -> dict[str, str]:
     input_file = os.path.join(job_dir, "input.smi")
     with open(input_file, "w") as f:
         f.write(input_data["query"])
-    
     # Create output directory
     save_folder = os.path.join(job_dir, "sea_output")
     os.makedirs(save_folder, exist_ok=True)
@@ -113,6 +123,7 @@ async def submit_task(request: Request) -> dict[str, str]:
 def get_task_status(request: Request):
     task_id = request.query_params.get("taskId")
     sea_result_file = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output/sea_result.tsv"
+
     if os.path.exists(sea_result_file):
         job_info = {
             "stage" : 2,
@@ -151,6 +162,7 @@ def get_task_status(request: Request):
         "progress": progress,
         "input": smiles_test
     }
+    print(f"Task {task_id} progress: {progress}% ({completed}/{total} completed)")
 
     if progress > 0 and progress < 100:
         job_info = {
@@ -169,30 +181,36 @@ def get_task_status(request: Request):
             "progress": progress,
         }
         # collect results from all subtasks
-        job_results = []
-        for result in sea_analysis_group_task.results:
-            job_results.append(result.get())
-        target_name_list, z_score_summary, p_value_summary = zip(*job_results)
-        save_folder = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
-        if not os.path.exists(save_folder):
-            _mkdir_(save_folder)
-        list_chembl = []
-        for file in os.listdir(os.getenv("SEA_DATA_FOLDER")):
-            full_file_name = os.path.join(os.getenv("SEA_DATA_FOLDER"), file)
-            if os.path.isfile(full_file_name):
-                list_chembl.append(full_file_name)
-        sea_result = pd.DataFrame()
-        sea_result["Target_Chembl_ID"] = [x.split("/")[-1].split(".")[0] for x in list_chembl]
-        sea_result["Z_score"] = np.round(z_score_summary, 2)
-        sea_result["p(P_value)"] = np.round(-np.log10(np.array(p_value_summary)), 4)
-        sea_result["Target_Name"] = target_name_list
-        sea_result = sea_result.sort_values(by="p(P_value)", ignore_index=True)
-        sea_result = sea_result[sea_result["p(P_value)"] > 3]
-        sea_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
+        try:
+            job_results = []
+            for result in sea_analysis_group_task.results:
+                job_results.append(result.get())
+            target_name_list, z_score_summary, p_value_summary = zip(*job_results)
+            save_folder = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
+            if not os.path.exists(save_folder):
+                _mkdir_(save_folder)
+            list_chembl = []
+            for item in _TARGET_FILES_CACHE:
+                target_name_with_species = "/".join(item.split('.')[0].split("/")[-2:]) 
+                list_chembl.append(target_name_with_species)
+            sea_result = pd.DataFrame()
+            sea_result["Target_Chembl_ID"] = [x.split('/')[1] for x in list_chembl]
+            sea_result["Target_Species"] = [x.split('/')[0] for x in list_chembl]
+            sea_result["Z_score"] = np.round(z_score_summary, 2)
+            sea_result["p(P_value)"] = np.round(-np.log10(np.array(p_value_summary)), 4)
+            sea_result["Target_Name"] = target_name_list
+            sea_result = sea_result.sort_values(by="p(P_value)", ignore_index=True)
+            sea_result = sea_result[sea_result["p(P_value)"] > 3]
+            print("SEA result head:\n", sea_result.head())
+            sea_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
 
-        table_result = sea_result.to_dict(orient="records")
-        job_info["result"] = table_result
-        job_info['stage'] = 2
+            table_result = sea_result.to_dict(orient="records")
+            job_info["result"] = table_result
+            job_info['stage'] = 2
+        except Exception as e:
+            print(f"Error aggregating SEA results: {e}")
+            job_info["msg"] = "Error occurred while processing SEA results."
+            job_info["status"] = "ERROR"
 
      
         
@@ -200,9 +218,10 @@ def get_task_status(request: Request):
         data_test, mol_test = get_smiles_property(smiles_test)
         for idx in np.arange(sea_result.shape[0]):
             target_chembl_id = sea_result["Target_Chembl_ID"].tolist()[idx]
-            print("Target ID " + target_chembl_id)
+            species = sea_result["Target_Species"].tolist()[idx]
+            print("Calculating similarity for target:", target_chembl_id)
             
-            known = pd.read_csv(f"{os.getenv("SEA_DATA_FOLDER")}/{target_chembl_id}.tsv", sep = "\t", index_col = 0)
+            known = pd.read_csv(f"{os.getenv("SEA_DATA_FOLDER")}/{species}/{target_chembl_id}.tsv", sep = "\t", index_col = 0)
             similarity = known_test_tc(known, data_test, fpSize=2048)
             result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(), 
                           columns = data_test["Name"].tolist())
@@ -234,7 +253,6 @@ def get_task_status(request: Request):
             result["Known"] = known["molecule_chembl_id"].tolist()
  
             for idxC in np.arange(result.shape[1] - 1) :
-                print(ref_compound[idxC]) 
                 top10 = result.sort_values(by = ["{}".format(ref_compound[idxC])], ascending = False, ignore_index = True).head(10)
                 summary_tc += top10["{}".format(ref_compound[idxC])].tolist() 
                 summary_ref += [ref_compound[idxC]] * top10.shape[0] 

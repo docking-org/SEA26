@@ -36,15 +36,20 @@ def sea_target_score(input, target,
                         radius = 2, 
                         fpSize = 2048, 
                         useFeatures = False):
-    data_test, mol_test = get_smiles_property(input)
-    known = pd.read_csv(f"{target}", sep = "\t", index_col = 0)
-    similarity = known_test_tc(known, data_test, fpSize)
-    result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(), 
-                          columns = data_test["Name"].tolist())
+    try:
+        data_test, mol_test = get_smiles_property(input)
+        known = pd.read_csv(f"{target}", sep = "\t", index_col = 0)
+        similarity = known_test_tc(known, data_test, fpSize)
+        result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(), 
+                            columns = data_test["Name"].tolist())
 
-    z_score, p_value = sea_score(result, tc_cutoff, mean_para, std_coef, std_exp)
-    target_name = known["target_name"].tolist()[0]
-
+        z_score, p_value = sea_score(result, tc_cutoff, mean_para, std_coef, std_exp)
+        target_name = known["target_name"].tolist()[0]
+        print(f"Completed SEA score for target: {target_name}, Z-score: {z_score:.2f}, p-value: {p_value:.4e}")
+    except Exception as e:
+        print(f"Error processing target {target}: {e}")
+        target_name = os.path.basename(target).split(".")[0]
+        z_score, p_value = None, None
     return target_name, z_score, p_value
 
 
@@ -148,7 +153,7 @@ def cleanup_task(*args, **kwargs):
 celery.conf.beat_schedule = {
     'daily-cleanup-task': {
         'task': 'main.cleanup_task',
-        'schedule': crontab(hour=0, minute=0),  # Run daily at midnight
+        'schedule': crontab(minute=10, hour='*'),  # Run every hour
     },
 }
 
