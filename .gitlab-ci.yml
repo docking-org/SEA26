@@ -16,5 +16,6 @@ deploy production:
           -e SEA_JOB_DIR=${SEA_JOB_DIR}
           -e SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
           -v /mnt/nfs/soft/www/home/apps/sea_2025/jobs:/mnt/nfs/soft/www/home/apps/sea_2025/jobs
-          -v /mnt/nfs/soft/www/home/apps/sea_2025/data/bioactive_prep:/mnt/nfs/soft/www/home/apps/sea_2025/data/bioactive_prep
+          -v /mnt//nfs/exh/work/khtang/chembl36_1um:/mnt/nfs/exh/work/khtang/chembl36_1um
+
           -d -p 5050:5050 ${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}-0.1.${CI_JOB_ID}
