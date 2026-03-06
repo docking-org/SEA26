@@ -9,7 +9,13 @@ wait
 
 # Start the Celery worker
 echo "Starting Celery worker..."
-celery -A backend.app.celery_worker worker --beat -s /tmp/sea-celerybeat-schedule --loglevel=info --concurrency=20  --max-tasks-per-child=30 &
+# celery -A backend.app.celery_worker worker --beat -s /tmp/sea-celerybeat-schedule --loglevel=info --concurrency=20  --max-tasks-per-child=30 &
+celery -A backend.app.celery_worker worker --beat \
+  -s /tmp/sea-celerybeat-schedule \
+  --loglevel=info \
+  --concurrency=72 \
+  --pool=prefork \
+  --max-tasks-per-child=300 &
 
 # Start the FastAPI backend
 echo "Starting backend..."
