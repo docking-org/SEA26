@@ -1,0 +1,89 @@
+services:
+#### REDIS ####  
+  redis:
+    image: redis:latest
+    container_name: sea-redis
+    restart: unless-stopped
+    networks:
+      - ocean
+    command: redis-server --port ${REDIS_PORT}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT}", "ping"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+
+
+#### REDIS BEAT SCHEDULER ####
+  redisbeat:
+    build: .
+    container_name: sea-redisbeat
+    restart: unless-stopped
+    networks:
+      - ocean
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A backend.app.celery_worker beat -l info -s /tmp/sea-celerybeat-schedule
+    volumes:
+      - beat_scheduler:/tmp
+
+
+#### WEB APPLICATION ####
+  web:
+    build: .
+    container_name: sea-web
+    restart: unless-stopped
+    networks:
+      - ocean
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "5050:5050"
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND} 
+      - SEA_DATA_FOLDER=/nfs/exh/work/khtang/chembl36_1um
+      - SEA_JOB_DIR=/nfs/home/khtang/tmp/sea225/v2/jobs
+    command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050
+    volumes:
+      - /nfs/exh/work/khtang/chembl36_1um:/nfs/exh/work/khtang/chembl36_1um
+      - /nfs/home/khtang/tmp/sea225/v2/jobs:/nfs/home/khtang/tmp/sea225/v2/jobs
+
+#### REDIS WORKER ####
+  redisworker:
+    build: .
+    container_name: sea-redisworker
+    restart: unless-stopped
+    networks:
+      - ocean
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - SEA_JOB_DIR=${SEA_JOB_DIR}
+      - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
+    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=20 --max-tasks-per-child=30
+    volumes:
+      - /nfs/exh/work/khtang/chembl36_1um:/nfs/exh/work/khtang/chembl36_1um
+      - /nfs/home/khtang/tmp/sea225/v2/jobs:/nfs/home/khtang/tmp/sea225/v2/jobs
+
+
+
+##### ----- NETWORKS ------ #####
+networks:
+  ocean:
+    driver: bridge
+
+
+##### ----- VOLUMES ----- #####
+volumes:
+  beat_scheduler:
+
+
+
+

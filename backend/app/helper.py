@@ -504,7 +504,54 @@ def sea_analysis_with_multiprocessing(testFile, list_chembl,
 	return sea_results
 
 
+#### SEA save progress to file ####
 
+def get_progress(task_id: str) -> dict:
+	progress_file = f"{os.environ.get("SEA_JOB_DIR")}/{task_id}/.progress"
+	if os.path.exists(progress_file):
+		with open(progress_file, 'r') as f:
+			progress_data = json.load(f)
+		return progress_data
+	else:
+		return {'progress': 0, 'status': 'No progress data found.'}
+
+
+
+def save_progress(task_id: str, progress_data: dict) -> None:
+	progress_file = f"{os.environ.get("SEA_JOB_DIR")}/{task_id}/.progress"
+	if not os.path.exists(progress_file):
+		raise Exception("Progress file does not exist.")
+	try:
+		with open(progress_file, 'w') as f:
+			json.dump(progress_data, f)
+		return "Progress saved."
+	except Exception as e:
+		raise Exception(f"Error saving progress: {str(e)}")
+	
+def init_progress_file(task_id: str) -> None:
+	progress_file = f"{os.environ.get("SEA_JOB_DIR")}/{task_id}/.progress"
+	initial_progress_data = {
+		'progress': 0,
+		'status': 'PENDING',
+		'error': None,
+		'sea_calculated': False,
+		'best_similarity_calculated': False,
+		'heatmap_calculated': False,
+		'failed': False,
+
+	}
+	if not os.path.exists(progress_file):
+		try:
+			with open(progress_file, 'w') as f:
+				json.dump(initial_progress_data, f)
+			return "Progress file initialized."
+		except Exception as e:
+			raise Exception(f"Error initializing progress file: {str(e)}")
+	else:
+		return "Progress file already exists."
+	
+
+	
 
 ################################################################
 ## Read in and process data 

@@ -24,7 +24,7 @@ RUN echo "conda activate sea25" > ~/.bashrc
 ENV PATH /opt/conda/envs/sea25/bin:$PATH
 RUN pip install -r requirements.txt
 
-RUN apt-get update && apt-get install -y redis-tools redis-server
+RUN apt-get update && apt-get install -y 
 
 
 COPY backend ./backend
@@ -32,8 +32,5 @@ COPY backend ./backend
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
 EXPOSE 5050
-
-RUN chmod +x run.sh
-ENTRYPOINT "./run.sh"
 
 

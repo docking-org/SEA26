@@ -7,14 +7,6 @@ deploy production:
   tags:
     - sea25
   script:
-    - docker build --build-arg GIT_TOKEN=${GIT_TOKEN}
-            -t "${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}-0.1.${CI_JOB_ID}" .
-    - docker stop "${CI_PROJECT_NAME}" || true
-    - docker rm "${CI_PROJECT_NAME}" || true
-    - docker run --name ${CI_PROJECT_NAME} 
-          -d --restart unless-stopped
-          -e SEA_JOB_DIR=${SEA_JOB_DIR}
-          -e SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
-          -v /mnt/nfs/soft/www/home/apps/sea_2025/jobs:/mnt/nfs/soft/www/home/apps/sea_2025/jobs
-          -v /mnt/nfs/exh/work/khtang/chembl36_1um:/mnt/nfs/exh/work/khtang/chembl36_1um
-          -d -p 5050:5050 ${CI_PROJECT_NAME}:${CI_COMMIT_REF_NAME}-0.1.${CI_JOB_ID}
+    - docker compose -f compose.yml build --build-arg GIT_TOKEN="${GIT_TOKEN}"
+    - docker compose -f compose.yml down || true
+    - docker compose -f compose.yml up -d

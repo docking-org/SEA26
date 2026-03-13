@@ -12,8 +12,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../.env"))
 
 celery = Celery(
     "sea-worker",
-    broker="redis://localhost:6380/0",
-    backend="redis://localhost:6380/1",
+    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0"),
+    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6380/1")
 )
 celery.autodiscover_tasks()
 
@@ -136,7 +136,7 @@ def cleanup_task(*args, **kwargs):
    
     save_folder = os.environ.get("SEA_JOB_DIR")
     # keep the last 30 jobs in the folder or remove the job folder what are older than 1 day
-    if len(os.listdir(save_folder)) < 3:
+    if len(os.listdir(save_folder)) < 30:
         return "No cleanup needed."
     
     import shutil
@@ -145,7 +145,7 @@ def cleanup_task(*args, **kwargs):
         dir_path = os.path.join(save_folder, dir)
         if os.path.isdir(dir_path):
             dir_time = os.path.getmtime(dir_path)
-            if (time.time() - dir_time) > 86400 and len(os.listdir(save_folder)) > 3:  # 1 day 
+            if (time.time() - dir_time) > 86400 and len(os.listdir(save_folder)) > 30:  # 1 day 
                 shutil.rmtree(dir_path)
                 print(f"Removed old job folder: {dir_path}")
     return "Cleanup completed."
