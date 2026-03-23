@@ -3,6 +3,8 @@ from celery.result import GroupResult
 from celery.schedules import crontab
 import pandas as pd
 import numpy as np
+import redis
+import pickle
 from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score
 from dotenv import load_dotenv
 import os
@@ -17,6 +19,80 @@ celery = Celery(
 )
 celery.autodiscover_tasks()
 
+# Redis cache for target DataFrames (using separate DB to avoid conflicts)
+redis_cache = redis.Redis(
+    host=os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0").split("://")[1].split(":")[0],
+    port=int(os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0").split(":")[2].split("/")[0]),
+    db=2,  # Use DB 2 for caching (DB 0 = broker, DB 1 = backend)
+    decode_responses=False  # Keep binary for pickle
+)
+
+def get_cached_target(target_file):
+    """Get target DataFrame from Redis cache, or load from disk if not cached."""
+    cache_key = f"target:{target_file}"
+
+    # Try to get from cache
+    cached_data = redis_cache.get(cache_key)
+    if cached_data:
+        return pickle.loads(cached_data)
+
+    # Cache miss - load from disk
+    try:
+        df = pd.read_csv(target_file, sep="\t", index_col=0)
+        # Store in cache (with 24 hour expiration)
+        redis_cache.setex(cache_key, 86400, pickle.dumps(df))
+        print(f"Cache miss - loaded and cached: {os.path.basename(target_file)}")
+        return df
+    except Exception as e:
+        print(f"Error loading target file {target_file}: {e}")
+        raise
+
+@celery.task(name="sea.warm_cache")
+def warm_target_cache():
+    """Pre-populate Redis cache with all target files."""
+    import glob
+
+    data_folder = os.getenv("SEA_DATA_FOLDER")
+    print(f"Warming Redis cache from {data_folder}...")
+
+    # Find all .tsv files
+    target_files = []
+    for folder in os.listdir(data_folder):
+        folder_path = os.path.join(data_folder, folder)
+        if os.path.isdir(folder_path):
+            target_files.extend(glob.glob(os.path.join(folder_path, "*.tsv")))
+
+    cached_count = 0
+    error_count = 0
+
+    for i, target_file in enumerate(target_files):
+        try:
+            cache_key = f"target:{target_file}"
+
+            # Skip if already cached
+            if redis_cache.exists(cache_key):
+                cached_count += 1
+                continue
+
+            # Load and cache
+            df = pd.read_csv(target_file, sep="\t", index_col=0)
+            redis_cache.setex(cache_key, 86400, pickle.dumps(df))
+            cached_count += 1
+
+            if (i + 1) % 100 == 0:
+                print(f"Cached {i + 1}/{len(target_files)} files...")
+        except Exception as e:
+            print(f"Error caching {target_file}: {e}")
+            error_count += 1
+
+    result = {
+        "total_files": len(target_files),
+        "cached": cached_count,
+        "errors": error_count
+    }
+    print(f"Cache warming complete: {result}")
+    return result
+
 @celery.task(name="sea.collect_sea_results")
 def collect_sea_results(async_result):
     if async_result.ready():
@@ -29,22 +105,28 @@ def collect_sea_results(async_result):
     
 @shared_task( name="sea.sea_target_score")
 def sea_target_score(input, target,
-                        tc_cutoff = 0.57, 
-                        mean_para = 4.24 * 10 ** -4, 
-                        std_coef = 4.49 * 10 ** -3, 
-		                std_exp = 0.665, 
-                        radius = 2, 
-                        fpSize = 2048, 
+                        tc_cutoff = 0.57,
+                        mean_para = 4.24 * 10 ** -4,
+                        std_coef = 4.49 * 10 ** -3,
+		                std_exp = 0.665,
+                        radius = 2,
+                        fpSize = 2048,
                         useFeatures = False):
     try:
         data_test, mol_test = get_smiles_property(input)
-        known = pd.read_csv(f"{target}", sep = "\t", index_col = 0)
-        similarity = known_test_tc(known, data_test, fpSize)
-        result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(), 
-                            columns = data_test["Name"].tolist())
 
-        z_score, p_value = sea_score(result, tc_cutoff, mean_para, std_coef, std_exp)
-        target_name = known["target_name"].tolist()[0]
+        # Get target data from Redis cache (falls back to disk on cache miss)
+        known = get_cached_target(target)
+
+        # Calculate similarity - returns numpy array
+        similarity = known_test_tc(known, data_test, fpSize)
+
+        # Pass numpy array directly to sea_score (no DataFrame creation needed)
+        z_score, p_value = sea_score(similarity, tc_cutoff, mean_para, std_coef, std_exp)
+
+        # More efficient target name extraction
+        target_name = known["target_name"].iloc[0]
+
         print(f"Completed SEA score for target: {target_name}, Z-score: {z_score:.2f}, p-value: {p_value:.4e}")
     except Exception as e:
         print(f"Error processing target {target}: {e}")

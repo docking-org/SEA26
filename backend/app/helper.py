@@ -199,13 +199,16 @@ def known_test_tc(known, test, fpSize) :
 
 def sea_score(similarity, tc_cutoff = 0.57, mean_para = 4.24 * 10 ** -4, std_coef = 4.49 * 10 ** -3, std_exp = 0.665) :
 	'''
-	similarity	pd.DataFrame	pairwise Tc score
+	similarity	np.ndarray or pd.DataFrame	pairwise Tc score
 	'''
-	similarity = similarity.to_numpy()
+	# Handle both numpy arrays and DataFrames
+	if hasattr(similarity, 'to_numpy'):
+		similarity = similarity.to_numpy()
+
 	size = similarity.shape[0] * similarity.shape[1]
 	raw_score = np.sum(similarity[similarity > tc_cutoff])
 	z_score = (raw_score - mean_para * size) / (std_coef * size ** std_exp)
-	
+
 	if z_score > 0 :
 		if z_score > 500 : z_score = 500
 		x = - np.exp(- z_score * np.pi / np.sqrt(6) - 0.577215665)

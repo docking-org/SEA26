@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 import numpy as np
 from .celery_worker import celery
 from celery import group
-from .celery_worker import _mkdir_, remove_salt, sea_target_score
+from .celery_worker import _mkdir_, remove_salt, sea_target_score, warm_target_cache
 from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
@@ -94,7 +94,7 @@ async def submit_task(request: Request) -> dict[str, str]:
     
     # Get cached target files 
     list_chembl = _TARGET_FILES_CACHE
-    
+
     # Create and submit task group FIRST to get the ID
     task_group = group(
         sea_target_score.s(input=smiles_test, target=target)
@@ -432,11 +432,39 @@ def get_best_similarity_per_target(request: Request):
                     'Tanimoto_Coefficient': entry['Tanimoto_Score']
                 })
                 break
-    return {"task_id": task_id, 
+    return {"task_id": task_id,
             "query_compounds": list(query_molecules_set),
-            "target_chembl_id": target_chembl_id, 
+            "target_chembl_id": target_chembl_id,
             "best_similarity": best_similarity_json,
             "grouped_best_similarity": result_best_similarity}
+
+@router.post("/warm_cache")
+def warm_cache():
+    """Trigger Redis cache warming for target files."""
+    task = warm_target_cache.delay()
+    return {"message": "Cache warming started", "task_id": task.id}
+
+@router.get("/cache_info")
+def cache_info():
+    """Get information about the Redis cache."""
+    import redis as redis_module
+
+    # Connect to cache DB
+    r = redis_module.Redis(
+        host=os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0").split("://")[1].split(":")[0],
+        port=int(os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0").split(":")[2].split("/")[0]),
+        db=2
+    )
+
+    # Count cached targets
+    cached_keys = r.keys("target:*")
+    total_targets = len(_TARGET_FILES_CACHE)
+
+    return {
+        "cached_targets": len(cached_keys),
+        "total_targets": total_targets,
+        "cache_hit_rate": f"{(len(cached_keys) / total_targets * 100):.1f}%" if total_targets > 0 else "N/A"
+    }
 
 
 
