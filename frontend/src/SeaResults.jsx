@@ -96,7 +96,7 @@ export default function Result() {
                 setResult(data.result);
                 console.log('Task completed:', data);
             }
-            else if (data.status === 'RUNNING'){
+            else if (data.status === 'RUNNING' || data.status === 'PENDING') {
                 setPercent1Done(data.progress);
                 console.log('Task in progress:', data);
                 setTimeout(checkTaskStatus, 500); 
