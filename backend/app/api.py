@@ -112,46 +112,6 @@ async def _submit_sea_job(task_id: str, input_data: dict):
     group_result.id = task_id
     group_result.save()
 
-
-# @router.post("/submit")
-# async def submit_task(request: Request) -> dict[str, str]:
-#     input_data = await request.json()
-    
-#     # Parse SMILES first (fast)
-#     smiles_test = [
-#         f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" 
-#         for x in input_data["query"].splitlines() 
-#         if x.strip()
-#     ]
-    
-#     # Get cached target files 
-#     list_chembl = _TARGET_FILES_CACHE
-
-#     # Create and submit task group FIRST to get the ID
-#     task_group = group(
-#         sea_target_score.s(input=smiles_test, target=target)
-#         for target in list_chembl
-#     )
-#     group_task = task_group.apply_async()
-#     group_task.save()
-    
-#     # Now create directory with the actual task ID (no rename needed)
-#     task_id = group_task.id
-#     job_dir = os.path.join(os.getenv('SEA_JOB_DIR'), task_id)
-#     os.makedirs(job_dir, exist_ok=True)
-    
-#     # Write input file
-#     input_file = os.path.join(job_dir, "input.smi")
-#     with open(input_file, "w") as f:
-#         f.write(input_data["query"])
-#     # Create output directory
-#     save_folder = os.path.join(job_dir, "sea_output")
-#     os.makedirs(save_folder, exist_ok=True)
-#     init_progress_file(task_id)
-    
-#     return {"task_id": task_id}
-
-
 @router.get("/result")
 def get_task_status(request: Request):
     task_id = request.query_params.get("taskId")
@@ -182,8 +142,6 @@ def get_task_status(request: Request):
     completed = sea_analysis_group_task.completed_count()
     total = len(sea_analysis_group_task.results)
     progress = int((completed / total) * 100)
-    print(progress)
-
 
     print(f"Task {task_id} progress: {progress}% ({completed}/{total} completed)")
 
