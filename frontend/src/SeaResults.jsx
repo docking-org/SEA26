@@ -21,34 +21,7 @@ export default function Result() {
     const [rdkitReady, setRdkitReady] = useState(false);
     const [moleculeImages, setMoleculeImages] = useState({});
 
-     // Load RDKit.js
-     useEffect(() => {
-        const loadRDKit = async () => {
-            try {
-                if (!window.RDKit) {
-                    await new Promise((resolve, reject) => {
-                        const script = document.createElement('script');
-                        script.src = 'https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js';
-                        script.onload = resolve;
-                        script.onerror = reject;
-                        document.head.appendChild(script);
-                    });
-                    
-                    window.initRDKitModule().then((RDKit) => {
-                        window.RDKit = RDKit;
-                        setRdkitReady(true);
-                        console.log('RDKit.js loaded successfully');
-                    });
-                } else {
-                    setRdkitReady(true);
-                }
-            } catch (error) {
-                console.error('Error loading RDKit.js:', error);
-            }
-        };
-        
-        loadRDKit();
-    }, []);
+  
     function generateMoleculeSVG(smiles, id, width = 200, height = 200) {
         try {
             if (!window.RDKit || !rdkitReady) {
@@ -91,18 +64,18 @@ export default function Result() {
             const response = await fetch(`/api/result?taskId=${taskId}`);
             const data = await response.json();
             
-            if(data.status === 'SUCCESS'){
+            if (data.status === 'SUCCESS'){
                 setPercent1Done(100);
                 setResult(data.result);
                 console.log('Task completed:', data);
             }
             else if (data.status === 'RUNNING' || data.status === 'PENDING') {
                 setPercent1Done(data.progress);
-                console.log('Task in progress:', data);
-                setTimeout(checkTaskStatus, 500); 
+                console.log('Task in progress:', data); 
             } else {
-                console.log('Task status:', data);
+                console.log('Task status whatever:', data);
             }
+            console.log('Task status response hihihihi:', data);
         } catch (error) {
             console.error('Error checking task status:', error);
         }
@@ -175,11 +148,40 @@ export default function Result() {
     const getTextColor = (score) => {
         return score >= 0.5 ? 'white' : '#1f2937';
     };
-
-    // Initiate task status check
+    // Check task status every 5 seconds
     useEffect(() => {
-        checkTaskStatus();
+        const interval = setInterval(checkTaskStatus, 5000);
+        return () => clearInterval(interval);
     }, [taskId]);
+
+    // Load RDKit.js
+    useEffect(() => {
+    const loadRDKit = async () => {
+        try {
+            if (!window.RDKit) {
+                await new Promise((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.src = 'https://unpkg.com/@rdkit/rdkit/dist/RDKit_minimal.js';
+                    script.onload = resolve;
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+                
+                window.initRDKitModule().then((RDKit) => {
+                    window.RDKit = RDKit;
+                    setRdkitReady(true);
+                    console.log('RDKit.js loaded successfully');
+                });
+            } else {
+                setRdkitReady(true);
+            }
+        } catch (error) {
+            console.error('Error loading RDKit.js:', error);
+        }
+    };
+    
+        loadRDKit();
+    }, []);
 
     // Fetch heatmap data when targetChemblId changes
     useEffect(() => {
