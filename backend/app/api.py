@@ -20,8 +20,10 @@ from dotenv import load_dotenv
 
 # import sea analysis functions
 import numpy as np
+import uuid, asyncio
 from .celery_worker import celery
 from celery import group
+from celery.result import AsyncResult, GroupResult
 from .celery_worker import _mkdir_, remove_salt, sea_target_score, warm_target_cache
 from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress
 
@@ -80,44 +82,74 @@ task_logger = get_task_logger(__name__)
 def read_root() -> dict[str, Union[str, int]]:
     return {"msg": "Welcome to SEA", "version": 1}
 
-
 @router.post("/submit")
 async def submit_task(request: Request) -> dict[str, str]:
     input_data = await request.json()
-    
-    # Parse SMILES first (fast)
+    task_id = str(uuid.uuid4())
+    # create directory for the task
+    job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
+    os.makedirs(job_dir, exist_ok=True)
+    with open(f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi", "w") as f:
+        f.write(input_data['query'])
+    init_progress_file(task_id)
+
+    asyncio.create_task(_submit_sea_job(task_id, input_data["query"]))
+    return {"task_id": task_id}
+
+async def _submit_sea_job(task_id: str, input_data: dict):
+    list_chembl = _TARGET_FILES_CACHE
     smiles_test = [
         f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" 
-        for x in input_data["query"].splitlines() 
+        for x in input_data.splitlines() 
         if x.strip()
     ]
-    
-    # Get cached target files 
-    list_chembl = _TARGET_FILES_CACHE
-
-    # Create and submit task group FIRST to get the ID
-    task_group = group(
+    signatures = [
         sea_target_score.s(input=smiles_test, target=target)
         for target in list_chembl
-    )
-    group_task = task_group.apply_async()
-    group_task.save()
+    ]
+    job = group(*signatures)
+    group_result = job.apply_async()
+    group_result.id = task_id
+    group_result.save()
+
+
+# @router.post("/submit")
+# async def submit_task(request: Request) -> dict[str, str]:
+#     input_data = await request.json()
     
-    # Now create directory with the actual task ID (no rename needed)
-    task_id = group_task.id
-    job_dir = os.path.join(os.getenv('SEA_JOB_DIR'), task_id)
-    os.makedirs(job_dir, exist_ok=True)
+#     # Parse SMILES first (fast)
+#     smiles_test = [
+#         f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" 
+#         for x in input_data["query"].splitlines() 
+#         if x.strip()
+#     ]
     
-    # Write input file
-    input_file = os.path.join(job_dir, "input.smi")
-    with open(input_file, "w") as f:
-        f.write(input_data["query"])
-    # Create output directory
-    save_folder = os.path.join(job_dir, "sea_output")
-    os.makedirs(save_folder, exist_ok=True)
-    init_progress_file(task_id)
+#     # Get cached target files 
+#     list_chembl = _TARGET_FILES_CACHE
+
+#     # Create and submit task group FIRST to get the ID
+#     task_group = group(
+#         sea_target_score.s(input=smiles_test, target=target)
+#         for target in list_chembl
+#     )
+#     group_task = task_group.apply_async()
+#     group_task.save()
     
-    return {"task_id": task_id}
+#     # Now create directory with the actual task ID (no rename needed)
+#     task_id = group_task.id
+#     job_dir = os.path.join(os.getenv('SEA_JOB_DIR'), task_id)
+#     os.makedirs(job_dir, exist_ok=True)
+    
+#     # Write input file
+#     input_file = os.path.join(job_dir, "input.smi")
+#     with open(input_file, "w") as f:
+#         f.write(input_data["query"])
+#     # Create output directory
+#     save_folder = os.path.join(job_dir, "sea_output")
+#     os.makedirs(save_folder, exist_ok=True)
+#     init_progress_file(task_id)
+    
+#     return {"task_id": task_id}
 
 
 @router.get("/result")
