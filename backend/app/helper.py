@@ -522,8 +522,6 @@ def get_progress(task_id: str) -> dict:
 
 def save_progress(task_id: str, progress_data: dict) -> None:
 	progress_file = f"{os.environ.get("SEA_JOB_DIR")}/{task_id}/.progress"
-	if not os.path.exists(progress_file):
-		raise Exception("Progress file does not exist.")
 	try:
 		with open(progress_file, 'w') as f:
 			json.dump(progress_data, f)

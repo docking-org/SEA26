@@ -366,11 +366,22 @@ HDAC1 [O-]C(=O)CCC butyrate`}
 
             {!showAdvanced && (
               <div className="mt-3">
-                <p className="text-pretty mb-2">Examples:</p> 
+                <p className="text-pretty mb-2">Examples:</p>
                 <p className="text-pretty">
                   CNCCC(c1ccccc1)Oc2ccc(cc2)C(F)(F)F fluoxetine<br/>
                   Cn1cnc2c1c(=O)n(c(=O)n2C)C caffeine
-                </p> 
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuery("CNCCC(c1ccccc1)Oc2ccc(cc2)C(F)(F)F fluoxetine\nCn1cnc2c1c(=O)n(c(=O)n2C)C caffeine");
+                    setErrorMessage('');
+                    setIsValid(true);
+                  }}
+                  className="mt-2 rounded-md bg-teal-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-500"
+                >
+                  Load Example
+                </button>
               </div>
             )}
 

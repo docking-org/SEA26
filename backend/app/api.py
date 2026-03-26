@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from celery.utils.log import get_task_logger
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
 # import sea analysis functions
 import numpy as np
@@ -28,7 +28,7 @@ from .celery_worker import _mkdir_, remove_salt, sea_target_score, warm_target_c
 from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
-load_dotenv(env_path)
+load_dotenv(find_dotenv())
 
 # Cache the list of target files at startup
 _TARGET_FILES_CACHE = None
@@ -147,7 +147,6 @@ def get_task_status(request: Request):
     if job_info.get("failed"):
         return job_info
 
-    # Check group subtask progress (lightweight Redis read)
     try:
         sea_analysis_group_task = celery.GroupResult.restore(task_id)
         if sea_analysis_group_task:
@@ -155,8 +154,8 @@ def get_task_status(request: Request):
             total = len(sea_analysis_group_task.results)
             progress = int((completed / total) * 100)
             job_info["progress"] = progress
-            if progress == 100 and job_info.get("status") != "SUCCESS":
-                job_info["status"] = "RUNNING"  # Chord callback still processing
+            if progress > 0 and job_info.get("status") not in ("SUCCESS", "ERROR"):
+                job_info["status"] = "RUNNING"
     except Exception as e:
         print(f"Error checking group progress: {e}")
 

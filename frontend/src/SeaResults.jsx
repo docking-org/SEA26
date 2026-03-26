@@ -16,6 +16,7 @@ export default function Result() {
     const [hoveredCell, setHoveredCell] = useState(null);
     const [sortBy, setSortBy] = useState('score');
     const [activeButton, setActiveButton] = useState(false);
+    const [taskStatus, setTaskStatus] = useState(null);
 
     // RDkit images
     const [rdkitReady, setRdkitReady] = useState(false);
@@ -64,6 +65,7 @@ export default function Result() {
             const response = await fetch(`/api/result?taskId=${taskId}`);
             const data = await response.json();
             
+            setTaskStatus(data.status);
             if (data.status === 'SUCCESS'){
                 setPercent1Done(100);
                 setResult(data.result);
@@ -71,11 +73,10 @@ export default function Result() {
             }
             else if (data.status === 'RUNNING' || data.status === 'PENDING') {
                 setPercent1Done(data.progress);
-                console.log('Task in progress:', data); 
+                console.log('Task in progress:', data);
             } else {
-                console.log('Task status whatever:', data);
+                console.log('Task status:', data);
             }
-            console.log('Task status response hihihihi:', data);
         } catch (error) {
             console.error('Error checking task status:', error);
         }
@@ -148,11 +149,13 @@ export default function Result() {
     const getTextColor = (score) => {
         return score >= 0.5 ? 'white' : '#1f2937';
     };
-    // Check task status every 5 seconds
+    // Check task status every 5 seconds, stop when done
     useEffect(() => {
-        const interval = setInterval(checkTaskStatus, 5000);
+        if (taskStatus === 'SUCCESS' || taskStatus === 'ERROR') return;
+        checkTaskStatus();
+        const interval = setInterval(checkTaskStatus, 3000);
         return () => clearInterval(interval);
-    }, [taskId]);
+    }, [taskId, taskStatus]);
 
     // Load RDKit.js
     useEffect(() => {

@@ -6,10 +6,10 @@ import numpy as np
 import redis
 import pickle
 from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 import os
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "../.env"))
+load_dotenv(find_dotenv())
 
 
 celery = Celery(
