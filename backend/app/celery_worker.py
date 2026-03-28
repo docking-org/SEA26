@@ -27,7 +27,7 @@ redis_cache = redis.Redis(
     decode_responses=False  # Keep binary for pickle
 )
 
-r = redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0"), db=0)
+r = redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://redis:6380/0"), db=0)
 
 def get_cached_target(target_file):
     """Get target DataFrame from Redis cache, or load from disk if not cached."""

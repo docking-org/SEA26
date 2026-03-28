@@ -178,6 +178,8 @@ async def get_result(request: Request):
     
     meta = celery.backend.get_task_meta(task_id)
     job_info = meta['result'] if meta else None
+    print(job_info)
+    
     if job_info['status'] == "SUCCESS":
         job_info = get_progress(task_id)
         job_info['sea_score_done'] = True
