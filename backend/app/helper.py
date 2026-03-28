@@ -522,9 +522,13 @@ def get_progress(task_id: str) -> dict:
 
 def save_progress(task_id: str, progress_data: dict) -> None:
 	progress_file = f"{os.environ.get("SEA_JOB_DIR")}/{task_id}/.progress"
+	# update the progress file with the new data
+	old_progress_data = get_progress(task_id)
+	updated_progress_data = {**old_progress_data, **progress_data}
+	print(updated_progress_data)
 	try:
 		with open(progress_file, 'w') as f:
-			json.dump(progress_data, f)
+			json.dump(updated_progress_data, f)
 		return "Progress saved."
 	except Exception as e:
 		raise Exception(f"Error saving progress: {str(e)}")
@@ -532,12 +536,11 @@ def save_progress(task_id: str, progress_data: dict) -> None:
 def init_progress_file(task_id: str) -> None:
 	progress_file = f"{os.environ.get("SEA_JOB_DIR")}/{task_id}/.progress"
 	initial_progress_data = {
-		'progress': 0,
 		'status': 'PENDING',
 		'error': None,
-		'sea_calculated': False,
-		'best_similarity_calculated': False,
-		'heatmap_calculated': False,
+		'sea_score_done': False,
+		'best_similarity_done': False,
+		'heatmap_done': False,
 		'failed': False,
 
 	}

@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import redis
 import pickle
-from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress
+from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress, get_progress
 from dotenv import load_dotenv, find_dotenv
 import os
 
@@ -26,6 +26,8 @@ redis_cache = redis.Redis(
     db=2,  # Use DB 2 for caching (DB 0 = broker, DB 1 = backend)
     decode_responses=False  # Keep binary for pickle
 )
+
+r = redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0"), db=0)
 
 def get_cached_target(target_file):
     """Get target DataFrame from Redis cache, or load from disk if not cached."""
@@ -94,7 +96,7 @@ def warm_target_cache():
     return result
 
 @shared_task( name="sea.sea_target_score")
-def sea_target_score(input, target,
+def sea_target_score(input, target, parent_task_id, total_targets,
                         tc_cutoff = 0.57,
                         mean_para = 4.24 * 10 ** -4,
                         std_coef = 4.49 * 10 ** -3,
@@ -102,34 +104,107 @@ def sea_target_score(input, target,
                         radius = 2,
                         fpSize = 2048,
                         useFeatures = False):
+    
     try:
         data_test, mol_test = get_smiles_property(input)
-
         # Get target data from Redis cache (falls back to disk on cache miss)
         known = get_cached_target(target)
-
         # Calculate similarity - returns numpy array
         similarity = known_test_tc(known, data_test, fpSize)
-
         # Pass numpy array directly to sea_score (no DataFrame creation needed)
         z_score, p_value = sea_score(similarity, tc_cutoff, mean_para, std_coef, std_exp)
-
         # More efficient target name extraction
         target_name = known["target_name"].iloc[0]
+        # update progress in Redis for this target
+        completed = r.incr(f"progress:{parent_task_id}:completed_cnt")
+        progress = int((completed / total_targets) * 100)
+        is_done = completed >= total_targets
 
+        celery.backend.store_result(
+            parent_task_id,
+            result={
+                'completed_cnt': completed,
+                'total': total_targets,
+                'progress': progress,
+                'status': 'SUCCESS' if is_done else 'RUNNING',
+            },
+            state='SUCCESS' if is_done else 'RUNNING'
+        )
+        if is_done:
+            r.delete(f"progress:{parent_task_id}:completed_cnt")  # Clean up counter when done
         print(f"Completed SEA score for target: {target_name}, Z-score: {z_score:.2f}, p-value: {p_value:.4e}")
     except Exception as e:
         print(f"Error processing target {target}: {e}")
         target_name = os.path.basename(target).split(".")[0]
         z_score, p_value = None, None
+        # TODO : fail progress update for this target
     return target_name, z_score, p_value
 
+
+@shared_task(name="sea.sea_target_score_batch")
+def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
+                           tc_cutoff=0.57, mean_para=4.24e-4,
+                           std_coef=4.49e-3, std_exp=0.665,
+                           radius=2, fpSize=2048, useFeatures=False):
+    """Process a batch of targets in a single Celery task."""
+    # Retrieve shared input from Redis (stored once, not per-task)
+    raw = redis_cache.get(smiles_key)
+    if raw is None:
+        raise ValueError(f"Input data not found in Redis for key: {smiles_key}")
+    smiles_test = pickle.loads(raw)
+    # Compute fingerprints once per batch (not once per target)
+    data_test, mol_test = get_smiles_property(smiles_test)
+
+    results = []
+    for target in targets:
+        try:
+            known = get_cached_target(target)
+            similarity = known_test_tc(known, data_test, fpSize)
+            z_score, p_value = sea_score(similarity, tc_cutoff, mean_para, std_coef, std_exp)
+            target_name = known["target_name"].iloc[0]
+            results.append((target_name, z_score, p_value))
+        except Exception as e:
+            print(f"Error processing target {target}: {e}")
+            target_name = os.path.basename(target).split(".")[0]
+            results.append((target_name, None, None))
+
+        # Update progress atomically via Redis
+        completed = r.incr(f"progress:{parent_task_id}:completed_cnt")
+        progress = int((completed / total_targets) * 100)
+        is_done = completed >= total_targets
+
+        celery.backend.store_result(
+            parent_task_id,
+            result={
+                'completed_cnt': completed,
+                'total': total_targets,
+                'progress': progress,
+                'status': 'SUCCESS' if is_done else 'RUNNING',
+            },
+            state='SUCCESS' if is_done else 'RUNNING'
+        )
+        if is_done:
+            r.delete(f"progress:{parent_task_id}:completed_cnt")
+
+    return results
 
 
 @celery.task(name="sea.postprocess_sea_job")
 def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
     """Chord callback: runs on a Celery worker after all sea_target_score tasks complete."""
     import json
+
+    # Flatten batch results: each element is a list of (name, z, p) tuples
+    flat_results = []
+    for batch_result in group_results:
+        if isinstance(batch_result, list):
+            flat_results.extend(batch_result)
+        else:
+            flat_results.append(batch_result)
+    group_results = flat_results
+
+    # Clean up shared input from Redis
+    redis_cache.delete(f"input:{task_id}")
 
     job_dir = os.environ.get("SEA_JOB_DIR")
     data_folder = os.environ.get("SEA_DATA_FOLDER")

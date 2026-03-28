@@ -24,7 +24,8 @@ import uuid, asyncio
 from .celery_worker import celery
 from celery import group, chord
 from celery.result import AsyncResult, GroupResult
-from .celery_worker import _mkdir_, remove_salt, sea_target_score, warm_target_cache, postprocess_sea_job
+import pickle
+from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache
 from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
@@ -83,83 +84,119 @@ def read_root() -> dict[str, Union[str, int]]:
     return {"msg": "Welcome to SEA", "version": 1}
 
 @router.post("/submit")
-async def submit_task(request: Request) -> dict[str, str]:
+async def submit_task(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     input_data = await request.json()
     task_id = str(uuid.uuid4())
-    # create directory for the task
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
-    os.makedirs(job_dir, exist_ok=True)
-    with open(f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi", "w") as f:
-        f.write(input_data['query'])
+    _mkdir_(job_dir)
     init_progress_file(task_id)
-
-    asyncio.create_task(_submit_sea_job(task_id, input_data["query"]))
+    # time this function to simulate a long-running task
+    background_tasks.add_task(_submit_sea_job, task_id, input_data["query"])
     return {"task_id": task_id}
 
+
+# sea background task submission using Celery
 async def _submit_sea_job(task_id: str, input_data: dict):
-    list_chembl = _TARGET_FILES_CACHE
-    smiles_test = [
-        f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}"
-        for x in input_data.splitlines()
-        if x.strip()
-    ]
-    signatures = [
-        sea_target_score.s(input=smiles_test, target=target)
-        for target in list_chembl
-    ]
+    # setup job directory
+    import time
+    start = time.time()
+    try:
+        # job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
+        # _mkdir_(job_dir)
+        smiles_test = [
+            f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}"
+            for x in input_data.splitlines()
+            if x.strip()
+        ]
+        with open(f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi", "w") as f:
+            f.write(input_data)
+        # init_progress_file(task_id)
+        list_chembl = _TARGET_FILES_CACHE
+        total = len(list_chembl)
+        save_progress(task_id, {
+                            "status": "PENDING",
+                            "progress": 0, 
+                            "total_targets": total
+                            })
+        # Store input in Redis once (instead of serializing into every task)
+        smiles_key = f"input:{task_id}"
+        redis_cache.setex(smiles_key, 3600, pickle.dumps(smiles_test))
 
-    callback = postprocess_sea_job.s(
-        task_id=task_id,
-        list_chembl=list_chembl,
-        smiles_test=smiles_test,
-    )
+        # Chunk targets into batches to reduce broker round-trips
+        # 5821 targets / 100 = ~59 tasks instead of 5821
+        CHUNK_SIZE = 100
+        target_chunks = [list_chembl[i:i + CHUNK_SIZE] for i in range(0, len(list_chembl), CHUNK_SIZE)]
 
-    result = chord(signatures)(callback)
-    # Save the group result so we can track subtask progress
-    result.parent.id = task_id
-    result.parent.save()
+        signatures = [
+            sea_target_score_batch.s(
+                targets=chunk,
+                parent_task_id=task_id,
+                total_targets=total,
+                smiles_key=smiles_key,
+            )
+            for chunk in target_chunks
+        ]
+        callback = postprocess_sea_job.s(
+            task_id=task_id,
+            list_chembl=list_chembl,
+            smiles_test=smiles_test,
+        )
+        result = chord(signatures)(callback)
+        # Save the group result so we can track subtask progress
+        result.parent.id = task_id
+        result.parent.save()
+
+        celery.backend.store_result(
+            task_id=task_id,
+            result = {
+                "status": "PENDING",
+                "completed_cnt": 0,
+                "total_targets": total,
+                "progress": 0,
+                "group_id": result.id, 
+
+            }, state="PENDING"
+        )
+        end = time.time()
+        print(f"Submitted SEA job {task_id} with {total} targets in {end - start:.2f} seconds")
+        return {"task_id": task_id}
+    except Exception as e:
+        print(f"Error submitting SEA job: {e}")
+        save_progress(task_id, {
+                            "status": "ERROR",
+                            "progress": 0, 
+                            "total_targets": 0,
+                            "error": str(e),
+                            "failed": True
+                            })
+        return {"task_id": task_id, "error": str(e)}
+
 
 @router.get("/result")
-def get_task_status(request: Request):
+async def get_result(request: Request):
     task_id = request.query_params.get("taskId")
-    job_dir = os.getenv('SEA_JOB_DIR')
-    sea_result_file = f"{job_dir}/{task_id}/sea_output/sea_result.tsv"
-    progress_file = f"{job_dir}/{task_id}/.progress"
-
-    if not os.path.exists(progress_file):
-        return {"state": "UNKNOWN", "status": "No task found with the given ID."}
-
-    job_info = get_progress(task_id)
-
-    # If fully complete, return cached results from disk
-    if job_info.get("status") == "SUCCESS" and os.path.exists(sea_result_file):
+    
+    meta = celery.backend.get_task_meta(task_id)
+    job_info = meta['result'] if meta else None
+    if job_info['status'] == "SUCCESS":
+        job_info = get_progress(task_id)
+        job_info['sea_score_done'] = True
+    
+    print(job_info)
+    
+    job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}"
+    sea_result_file = f"{job_dir}/sea_output/sea_result.tsv"
+    if os.path.exists(sea_result_file):
         table_result = tsv2json(sea_result_file)
         job_info["result"] = table_result
-        input_f = f"{job_dir}/{task_id}/input.smi"
+        input_f = f"{job_dir}/input.smi"
         smiles_test = [
             f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}"
             for x in open(input_f).read().splitlines() if x.strip()
         ]
         job_info['input'] = smiles_test
-        return job_info
-
-    # If error, return error info
-    if job_info.get("failed"):
-        return job_info
-
-    try:
-        sea_analysis_group_task = celery.GroupResult.restore(task_id)
-        if sea_analysis_group_task:
-            completed = sea_analysis_group_task.completed_count()
-            total = len(sea_analysis_group_task.results)
-            progress = int((completed / total) * 100)
-            job_info["progress"] = progress
-            if progress > 0 and job_info.get("status") not in ("SUCCESS", "ERROR"):
-                job_info["status"] = "RUNNING"
-    except Exception as e:
-        print(f"Error checking group progress: {e}")
-
     return job_info
+
 
 @router.get("/recent_tasks")
 def get_recent_tasks():
