@@ -22,6 +22,9 @@ services:
     restart: unless-stopped
     networks:
       - ocean
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND} 
     depends_on:
       redis:
         condition: service_healthy
