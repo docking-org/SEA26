@@ -176,13 +176,15 @@ async def _submit_sea_job(task_id: str, input_data: dict):
 async def get_result(request: Request):
     task_id = request.query_params.get("taskId")
     
-    meta = celery.backend.get_task_meta(task_id)
-    job_info = meta.get('result') if meta else None
+    # Use .progress file as source of truth for status
+    job_info = get_progress(task_id)
 
-    # Celery group result overwrites the progress dict with a list
-    # when all batch tasks complete. Fall back to .progress file.
-    if not isinstance(job_info, dict):
-        job_info = get_progress(task_id)
+    # Merge real-time progress from Celery backend during batch scoring
+    meta = celery.backend.get_task_meta(task_id)
+    celery_result = meta.get('result') if meta else None
+    if isinstance(celery_result, dict) and 'progress' in celery_result:
+        job_info['progress'] = celery_result['progress']
+        job_info['completed_cnt'] = celery_result.get('completed_cnt', 0)
 
     if job_info.get('status') == "SUCCESS":
         job_info['sea_score_done'] = True
