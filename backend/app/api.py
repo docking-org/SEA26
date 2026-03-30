@@ -176,15 +176,10 @@ async def _submit_sea_job(task_id: str, input_data: dict):
 async def get_result(request: Request):
     task_id = request.query_params.get("taskId")
     
-    meta = celery.backend.get_task_meta(task_id)
-    job_info = meta['result'] if meta else None
+    job_info = get_progress(task_id)
     print(job_info)
 
-    if not job_info:
-        job_info = get_progress(task_id)
-
     if job_info.get('status') == "SUCCESS":
-        job_info = get_progress(task_id)
         job_info['sea_score_done'] = True
     
     print(job_info)
