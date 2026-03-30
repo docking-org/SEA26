@@ -119,17 +119,13 @@ def get_morgan_with_feature(mol, radius = 2, fpSize = 1024) :
 
 ## Loop through smiles strings and collect all fingerprint
 ## Return a pandas dataframe
-def collect_fingerprint(smiles, radius = 2, fpSize = 1024, useFeatures = False) : 
-	data = pd.DataFrame()
-
-	for idxMol in np.arange(len(smiles)) : 
-		mol = Chem.MolFromSmiles(smiles[idxMol])
-		fingerprint = get_morgan_with_feature(mol, radius, fpSize) if useFeatures else get_morgan(mol, radius, fpSize)
-		new_row = pd.Series(fingerprint)
-		data = pd.concat([data, new_row], ignore_index = True, axis = 1)
-
-	data = data.T
-	return data
+def collect_fingerprint(smiles, radius = 2, fpSize = 1024, useFeatures = False) :
+	fps = []
+	for smi in smiles:
+		mol = Chem.MolFromSmiles(smi)
+		fp = get_morgan_with_feature(mol, radius, fpSize) if useFeatures else get_morgan(mol, radius, fpSize)
+		fps.append(fp)
+	return pd.DataFrame(fps)
 
 ################################################################
 ## Tanimoto Helper Function 
@@ -137,21 +133,16 @@ def collect_fingerprint(smiles, radius = 2, fpSize = 1024, useFeatures = False) 
 
 ## Calculate tanimoto score between two sets of compounds
 def calc_tanimoto_sets(mol_setA, mol_setB) :
-	mol_setA = np.asarray(mol_setA)
-	mol_setB = np.asarray(mol_setB)
+	mol_setA = np.asarray(mol_setA, dtype=np.float32)
+	mol_setB = np.asarray(mol_setB, dtype=np.float32)
 
 	a_and_b = mol_setA @ mol_setB.T
 
-	count = np.sum(mol_setA, axis = 1)
-	size_A = np.ones((mol_setB.shape[0], mol_setA.shape[0])) * count
-	size_A = size_A.T
-
-	dist = mol_setB @ mol_setB.T
-	count = np.sum(mol_setB, axis = 1) 
-	size_B = np.ones((mol_setA.shape[0], mol_setB.shape[0])) * count
+	size_A = np.sum(mol_setA, axis=1, keepdims=True)   # (n_A, 1)
+	size_B = np.sum(mol_setB, axis=1, keepdims=True).T  # (1, n_B)
 
 	a_or_b = size_A + size_B - a_and_b
-	return a_and_b / a_or_b 
+	return (a_and_b / a_or_b).astype(np.float64)
 
 ## Calculate tanimoto score between one set of compounds and one reference smile
 def calc_tanimoto_ref(mol_setA, mol_ref) :
@@ -183,13 +174,13 @@ def max_tanimoto(smiles_A, smiles_B) :
 
 def known_test_tc(known, test, fpSize) :
 	'''
-	known:		pd.Dataframe	chembl known ligand set 
-	test:		pd.Dataframe	test compounds set 
+	known:		pd.Dataframe	chembl known ligand set
+	test:		pd.Dataframe	test compounds set
 	fpSize:		int		size of fingerprint
 	'''
-	
-	fp_known = known[np.arange(fpSize).astype(str)].to_numpy()
-	fp_test = test[np.arange(fpSize)].to_numpy() 
+	fp_cols_str = [str(i) for i in range(fpSize)]
+	fp_known = known[fp_cols_str].values.astype(np.float32)
+	fp_test = test[np.arange(fpSize)].values.astype(np.float32)
 
 	return calc_tanimoto_sets(fp_known, fp_test)
 
