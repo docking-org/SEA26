@@ -48,8 +48,8 @@ services:
     environment:
       - CELERY_BROKER_URL=${CELERY_BROKER_URL}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND} 
-      - SEA_DATA_FOLDER=/nfs/exh/work/khtang/chembl36_1um
-      - SEA_JOB_DIR=/nfs/home/khtang/tmp/sea225/v2/jobs
+      - SEA_DATA_FOLDER=/mnt/nfs/exh/work/khtang/chembl36_1um
+      - SEA_JOB_DIR=/mnt/nfs/home/khtang/tmp/sea225/v2/jobs
     command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --workers 5
     volumes:
       - /mnt/nfs/exh/work/khtang/chembl36_1um:/mnt/nfs/exh/work/khtang/chembl36_1um
