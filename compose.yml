@@ -48,12 +48,12 @@ services:
     environment:
       - CELERY_BROKER_URL=${CELERY_BROKER_URL}
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND} 
-      - SEA_DATA_FOLDER=/mnt/nfs/exh/work/khtang/chembl36_1um
-      - SEA_JOB_DIR=/mnt/nfs/home/khtang/tmp/sea225/v2/jobs
+      - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
+      - SEA_JOB_DIR=${SEA_JOB_DIR}
     command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --workers 5
     volumes:
-      - /mnt/nfs/exh/work/khtang/chembl36_1um:/mnt/nfs/exh/work/khtang/chembl36_1um
-      - /mnt/nfs/home/khtang/tmp/sea225/v2/jobs:/mnt/nfs/home/khtang/tmp/sea225/v2/jobs
+      - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
+      - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
 
 #### REDIS WORKER ####
   redisworker:
@@ -72,8 +72,8 @@ services:
       - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
     command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=20 --max-tasks-per-child=30
     volumes:
-      - /mnt/nfs/exh/work/khtang/chembl36_1um:/mnt/nfs/exh/work/khtang/chembl36_1um
-      - /mnt/nfs/home/khtang/tmp/sea225/v2/jobs:/mnt/nfs/home/khtang/tmp/sea225/v2/jobs
+      - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
+      - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
 
 
 

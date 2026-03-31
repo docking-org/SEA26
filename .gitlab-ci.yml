@@ -7,6 +7,6 @@ deploy production:
   tags:
     - sea25
   script:
-    - docker compose -f compose.yml build --no-cache --build-arg GIT_TOKEN="${GIT_TOKEN}"
+    - docker compose -f compose.yml build --build-arg GIT_TOKEN="${GIT_TOKEN}"
     - docker compose -f compose.yml down || true
     - docker compose -f compose.yml up -d
