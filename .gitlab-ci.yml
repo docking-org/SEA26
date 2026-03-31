@@ -7,6 +7,12 @@ deploy production:
   tags:
     - sea25
   script:
+    - |
+      echo "CELERY_BROKER_URL=${CELERY_BROKER_URL}" > .env
+      echo "CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}" >> .env
+      echo "REDIS_PORT=${REDIS_PORT}" >> .env
+      echo "SEA_DATA_FOLDER=${SEA_DATA_FOLDER}" >> .env
+      echo "SEA_JOB_DIR=${SEA_JOB_DIR}" >> .env
     - docker compose -f compose.yml build --build-arg GIT_TOKEN="${GIT_TOKEN}"
     - docker compose -f compose.yml down || true
     - docker compose -f compose.yml up -d
