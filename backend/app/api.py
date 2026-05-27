@@ -26,7 +26,7 @@ from celery import group, chord
 from celery.result import AsyncResult, GroupResult
 import pickle
 from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache
-from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress
+from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress, load_gev_params
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
 load_dotenv(find_dotenv())
@@ -111,11 +111,28 @@ async def _submit_sea_job(task_id: str, input_data: dict):
         with open(f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi", "w") as f:
             f.write(input_data)
         # init_progress_file(task_id)
+        # Load GEV params (shared cache in SEA_DATA_FOLDER; fits on first-ever run)
+        data_folder = os.getenv("SEA_DATA_FOLDER")
+        tc_cutoff = 0.29
+        gev_bin_width = 0.25
+        gev_freq_file = os.path.join(data_folder, "0.29_orig_freq.tsv")
+        gev_cache_file = os.path.join(data_folder, f"gev_params_tc{tc_cutoff}_bw{gev_bin_width}.tsv")
+
+        if os.path.exists(gev_freq_file):
+            gev_c, gev_loc, gev_scale = load_gev_params(gev_freq_file, gev_cache_file, bin_width=gev_bin_width)
+        else:
+            gev_c, gev_loc, gev_scale = 0.0, 0.0, 1.0
+
+        # Per-job copy for reproducibility / audit
+        job_gev_dest = os.path.join(os.getenv("SEA_JOB_DIR"), task_id, "gev_params.tsv")
+        if os.path.exists(gev_cache_file):
+            shutil.copy2(gev_cache_file, job_gev_dest)
+
         list_chembl = _TARGET_FILES_CACHE
         total = len(list_chembl)
         save_progress(task_id, {
                             "status": "PENDING",
-                            "progress": 0, 
+                            "progress": 0,
                             "total_targets": total
                             })
         # Store input in Redis once (instead of serializing into every task)
@@ -133,6 +150,10 @@ async def _submit_sea_job(task_id: str, input_data: dict):
                 parent_task_id=task_id,
                 total_targets=total,
                 smiles_key=smiles_key,
+                tc_cutoff=tc_cutoff,
+                gev_c=gev_c,
+                gev_loc=gev_loc,
+                gev_scale=gev_scale,
             )
             for chunk in target_chunks
         ]

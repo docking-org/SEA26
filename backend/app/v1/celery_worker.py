@@ -1,0 +1,498 @@
+from celery import Celery, current_task, shared_task, chord, current_app, group
+from celery.result import GroupResult
+from celery.schedules import crontab
+import pandas as pd
+import numpy as np
+import redis
+import pickle
+from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress, get_progress
+from dotenv import load_dotenv, find_dotenv
+import os
+
+load_dotenv(find_dotenv())
+
+
+celery = Celery(
+    "sea-worker",
+    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0"),
+    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6380/1")
+)
+celery.autodiscover_tasks()
+
+# Redis cache for target DataFrames (using separate DB to avoid conflicts)
+redis_cache = redis.Redis(
+    host=os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0").split("://")[1].split(":")[0],
+    port=int(os.getenv("CELERY_BROKER_URL", "redis://localhost:6380/0").split(":")[2].split("/")[0]),
+    db=2,  # Use DB 2 for caching (DB 0 = broker, DB 1 = backend)
+    decode_responses=False  # Keep binary for pickle
+)
+
+r = redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://redis:6380/0"), db=0)
+
+def get_cached_target(target_file):
+    """Get target DataFrame from Redis cache, or load from disk if not cached."""
+    cache_key = f"target:{target_file}"
+
+    # Try to get from cache
+    cached_data = redis_cache.get(cache_key)
+    if cached_data:
+        return pickle.loads(cached_data)
+
+    # Cache miss - load from disk
+    try:
+        df = pd.read_csv(target_file, sep="\t", index_col=0)
+        # Store in cache (with 24 hour expiration)
+        redis_cache.setex(cache_key, 86400, pickle.dumps(df))
+        print(f"Cache miss - loaded and cached: {os.path.basename(target_file)}")
+        return df
+    except Exception as e:
+        print(f"Error loading target file {target_file}: {e}")
+        raise
+
+@celery.task(name="sea.warm_cache")
+def warm_target_cache():
+    """Pre-populate Redis cache with all target files."""
+    import glob
+
+    data_folder = os.getenv("SEA_DATA_FOLDER")
+    print(f"Warming Redis cache from {data_folder}...")
+
+    # Find all .tsv files
+    target_files = []
+    for folder in os.listdir(data_folder):
+        folder_path = os.path.join(data_folder, folder)
+        if os.path.isdir(folder_path):
+            target_files.extend(glob.glob(os.path.join(folder_path, "*.tsv")))
+
+    cached_count = 0
+    error_count = 0
+
+    for i, target_file in enumerate(target_files):
+        try:
+            cache_key = f"target:{target_file}"
+            # Skip if already cached
+            if redis_cache.exists(cache_key):
+                cached_count += 1
+                continue
+
+            # Load and cache
+            df = pd.read_csv(target_file, sep="\t", index_col=0)
+            redis_cache.setex(cache_key, 86400, pickle.dumps(df))
+            cached_count += 1
+
+            if (i + 1) % 100 == 0:
+                print(f"Cached {i + 1}/{len(target_files)} files...")
+        except Exception as e:
+            print(f"Error caching {target_file}: {e}")
+            error_count += 1
+
+    result = {
+        "total_files": len(target_files),
+        "cached": cached_count,
+        "errors": error_count
+    }
+    print(f"Cache warming complete: {result}")
+    return result
+
+@shared_task( name="sea.sea_target_score")
+def sea_target_score(input, target, parent_task_id, total_targets,
+                        tc_cutoff = 0.57,
+                        mean_para = 4.24 * 10 ** -4,
+                        std_coef = 4.49 * 10 ** -3,
+		                std_exp = 0.665,
+                        radius = 2,
+                        fpSize = 2048,
+                        useFeatures = False):
+    
+    try:
+        data_test, mol_test = get_smiles_property(input)
+        # Get target data from Redis cache (falls back to disk on cache miss)
+        known = get_cached_target(target)
+        # Calculate similarity - returns numpy array
+        similarity = known_test_tc(known, data_test, fpSize)
+        # Pass numpy array directly to sea_score (no DataFrame creation needed)
+        z_score, p_value = sea_score(similarity, tc_cutoff, mean_para, std_coef, std_exp)
+        # More efficient target name extraction
+        target_name = known["target_name"].iloc[0]
+        # update progress in Redis for this target
+        completed = r.incr(f"progress:{parent_task_id}:completed_cnt")
+        progress = int((completed / total_targets) * 100)
+        is_done = completed >= total_targets
+
+        celery.backend.store_result(
+            parent_task_id,
+            result={
+                'completed_cnt': completed,
+                'total': total_targets,
+                'progress': progress,
+                'status': 'SUCCESS' if is_done else 'RUNNING',
+            },
+            state='SUCCESS' if is_done else 'RUNNING'
+        )
+        if is_done:
+            r.delete(f"progress:{parent_task_id}:completed_cnt")  # Clean up counter when done
+        print(f"Completed SEA score for target: {target_name}, Z-score: {z_score:.2f}, p-value: {p_value:.4e}")
+    except Exception as e:
+        print(f"Error processing target {target}: {e}")
+        target_name = os.path.basename(target).split(".")[0]
+        z_score, p_value = None, None
+        # TODO : fail progress update for this target
+    return target_name, z_score, p_value
+
+
+@shared_task(name="sea.sea_target_score_batch")
+def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
+                           tc_cutoff=0.57, mean_para=4.24e-4,
+                           std_coef=4.49e-3, std_exp=0.665,
+                           radius=2, fpSize=2048, useFeatures=False):
+    """Process a batch of targets in a single Celery task."""
+    # Retrieve shared input from Redis (stored once, not per-task)
+    raw = redis_cache.get(smiles_key)
+    if raw is None:
+        raise ValueError(f"Input data not found in Redis for key: {smiles_key}")
+    smiles_test = pickle.loads(raw)
+    # Compute fingerprints once per batch (not once per target)
+    data_test, mol_test = get_smiles_property(smiles_test)
+
+    results = []
+    for target in targets:
+        try:
+            known = get_cached_target(target)
+            similarity = known_test_tc(known, data_test, fpSize)
+            z_score, p_value = sea_score(similarity, tc_cutoff, mean_para, std_coef, std_exp)
+            target_name = known["target_name"].iloc[0]
+            results.append((target_name, z_score, p_value))
+        except Exception as e:
+            print(f"Error processing target {target}: {e}")
+            target_name = os.path.basename(target).split(".")[0]
+            results.append((target_name, None, None))
+
+        # Update progress atomically via Redis
+        completed = r.incr(f"progress:{parent_task_id}:completed_cnt")
+        progress = int((completed / total_targets) * 100)
+        is_done = completed >= total_targets
+
+        celery.backend.store_result(
+            parent_task_id,
+            result={
+                'completed_cnt': completed,
+                'total': total_targets,
+                'progress': progress,
+                'status': 'SUCCESS' if is_done else 'RUNNING',
+            },
+            state='SUCCESS' if is_done else 'RUNNING'
+        )
+        if is_done:
+            r.delete(f"progress:{parent_task_id}:completed_cnt")
+
+    return results
+
+
+@celery.task(name="sea.postprocess_sea_job")
+def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
+    """Chord callback: runs on a Celery worker after all sea_target_score tasks complete."""
+    import json
+
+    # Flatten batch results: each element is a list of (name, z, p) tuples
+    flat_results = []
+    for batch_result in group_results:
+        if isinstance(batch_result, list):
+            flat_results.extend(batch_result)
+        else:
+            flat_results.append(batch_result)
+    group_results = flat_results
+
+    # Clean up shared input from Redis
+    redis_cache.delete(f"input:{task_id}")
+
+    job_dir = os.environ.get("SEA_JOB_DIR")
+    data_folder = os.environ.get("SEA_DATA_FOLDER")
+    save_folder = f"{job_dir}/{task_id}/sea_output"
+
+    if not os.path.exists(save_folder):
+        _mkdir_(save_folder)
+
+    # --- Phase 1: Aggregate SEA results ---
+    try:
+        save_progress(task_id, {
+            'progress': 100, 'status': 'RUNNING', 'error': None,
+            'sea_calculated': False, 'best_similarity_calculated': False,
+            'heatmap_calculated': False, 'failed': False,
+        })
+
+        # Pair results with their target files and filter out failures
+        valid = [
+            (name, z, p, chembl_path)
+            for (name, z, p), chembl_path in zip(group_results, list_chembl)
+            if z is not None and p is not None
+        ]
+        if not valid:
+            save_progress(task_id, {
+                'progress': 100, 'status': 'ERROR', 'error': 'All target scores failed',
+                'sea_calculated': False, 'best_similarity_calculated': False,
+                'heatmap_calculated': False, 'failed': True,
+            })
+            return {"task_id": task_id, "status": "ERROR"}
+
+        target_name_list, z_score_summary, p_value_summary, valid_chembl = zip(*valid)
+
+        list_chembl_names = []
+        for item in valid_chembl:
+            target_name_with_species = "/".join(item.split('.')[0].split("/")[-2:])
+            list_chembl_names.append(target_name_with_species)
+
+        sea_result = pd.DataFrame()
+        sea_result["Target_Chembl_ID"] = [x.split('/')[1] for x in list_chembl_names]
+        sea_result["Target_Species"] = [x.split('/')[0] for x in list_chembl_names]
+        sea_result["Z_score"] = np.round(z_score_summary, 2)
+        sea_result["p(P_value)"] = np.round(-np.log10(np.array(p_value_summary)), 4)
+        sea_result["Target_Name"] = target_name_list
+        sea_result = sea_result.sort_values(by="p(P_value)", ignore_index=True)
+        sea_result = sea_result[sea_result["p(P_value)"] > 3]
+        sea_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
+
+        save_progress(task_id, {
+            'progress': 100, 'status': 'RUNNING', 'error': None,
+            'sea_calculated': True, 'best_similarity_calculated': False,
+            'heatmap_calculated': False, 'failed': False,
+        })
+    except Exception as e:
+        print(f"Error aggregating SEA results: {e}")
+        save_progress(task_id, {
+            'progress': 100, 'status': 'ERROR', 'error': str(e),
+            'sea_calculated': False, 'best_similarity_calculated': False,
+            'heatmap_calculated': False, 'failed': True,
+        })
+        raise
+
+    # --- Phase 2: Similarity scores for each hit target ---
+    heatmap_data = []
+    data_test, mol_test = get_smiles_property(smiles_test)
+    # Pre-build lookup dict once (used in every target iteration)
+    name_to_smiles = dict(zip(data_test["Name"], data_test["SMILES"]))
+    test_names = data_test["Name"].tolist()
+    n_test = len(test_names)
+
+    for idx in range(sea_result.shape[0]):
+        try:
+            target_chembl_id = sea_result["Target_Chembl_ID"].iloc[idx]
+            species = sea_result["Target_Species"].iloc[idx]
+
+            known = get_cached_target(f"{data_folder}/{species}/{target_chembl_id}.tsv")
+            similarity = known_test_tc(known, data_test, fpSize=2048)
+            sim_rounded = np.round(similarity, 4)
+            known_ids = known["molecule_chembl_id"].tolist()
+            known_smiles = dict(zip(known["molecule_chembl_id"], known["canonical_smiles"]))
+            target_cid = known["target_chembl_id"].iloc[0]
+            target_nm = known["target_name"].iloc[0]
+
+            # Best similarity per test compound (max across known axis)
+            best_idx = np.argmax(sim_rounded, axis=0)
+            best_tc = np.max(sim_rounded, axis=0)
+            best_known_ids = [known_ids[i] for i in best_idx]
+
+            best_similarity = pd.DataFrame({
+                "Name": test_names,
+                "SMILES": data_test["SMILES"].tolist(),
+                "Target_Chembl_Id": target_cid,
+                "Target_Name": target_nm,
+                "Most_similar_known": best_known_ids,
+                "Tanimoto_Coefficient": best_tc,
+                "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
+            })
+            best_similarity = best_similarity.sort_values(by=["Tanimoto_Coefficient"], ascending=False, ignore_index=True)
+            best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.7]
+            best_similarity.to_csv(f"{save_folder}/best_similar_{target_cid}.tsv", sep="\t", index=False)
+
+            # Top 10 similarity matrix — use argpartition instead of full sort
+            summary_tc = []
+            summary_ref = []
+            summary_known = []
+            summary_ref_smiles = []
+            summary_known_smiles = []
+            k = min(10, similarity.shape[0])
+            for idxC in range(n_test):
+                col_vals = sim_rounded[:, idxC]
+                if k < len(col_vals):
+                    top_k_idx = np.argpartition(col_vals, -k)[-k:]
+                else:
+                    top_k_idx = np.arange(len(col_vals))
+                top_k_idx = top_k_idx[np.argsort(col_vals[top_k_idx])[::-1]]
+                top_tc = col_vals[top_k_idx].tolist()
+                top_known_ids = [known_ids[i] for i in top_k_idx]
+
+                summary_tc += top_tc
+                summary_ref += [test_names[idxC]] * len(top_k_idx)
+                summary_known += top_known_ids
+                summary_ref_smiles += [name_to_smiles[test_names[idxC]]] * len(top_k_idx)
+                summary_known_smiles += [known_smiles[kid] for kid in top_known_ids]
+            similarity_matrix = pd.DataFrame({
+                "Name": summary_ref,
+                "Tanimoto_Score": summary_tc,
+                "SMILES": summary_ref_smiles,
+                "Known_Hit_ID": summary_known,
+                "Known_Hit_SMILES": summary_known_smiles,
+            })
+            similarity_matrix = similarity_matrix.sort_values(by=["Name", "Tanimoto_Score"], ascending=[True, False], ignore_index=True)
+            similarity_matrix.to_csv(f"{save_folder}/top10_{target_cid}.tsv", sep="\t", index=False)
+            similarity_matrix['Target_ChEMBL_ID'] = target_cid
+            heatmap_data += similarity_matrix.to_dict(orient="records")
+        except Exception as e:
+            print(f"Error calculating similarity for target {target_chembl_id}: {e}")
+            continue
+
+    save_progress(task_id, {
+        'progress': 100, 'status': 'RUNNING', 'error': None,
+        'sea_calculated': True, 'best_similarity_calculated': True,
+        'heatmap_calculated': False, 'failed': False,
+    })
+
+    # --- Phase 3: Heatmap data ---
+    try:
+        group_fields = {"Name", "SMILES"}
+        grouped_dict = {}
+        for item in heatmap_data:
+            key = (item["Name"], item["SMILES"])
+            if key not in grouped_dict:
+                grouped_dict[key] = []
+            hit = {k: item[k] for k in item if k not in group_fields}
+            grouped_dict[key].append(hit)
+
+        heatmap_result = []
+        for (name, smiles), hits in grouped_dict.items():
+            grouped_target_hits = {}
+            for hit in hits:
+                tkey = hit["Target_ChEMBL_ID"]
+                if tkey not in grouped_target_hits:
+                    grouped_target_hits[tkey] = []
+                grouped_target_hits[tkey].append({
+                    "Known_Hit_ID": hit["Known_Hit_ID"],
+                    "Known_Hit_SMILES": hit["Known_Hit_SMILES"],
+                    "Tanimoto_Score": hit["Tanimoto_Score"]
+                })
+            heatmap_result.append({"Name": name, "SMILES": smiles, "hits": grouped_target_hits})
+
+        heatmap_file = f"{job_dir}/{task_id}/.heatmap"
+        with open(heatmap_file, "w") as hm:
+            json.dump(heatmap_result, hm, indent=4)
+    except Exception as e:
+        print(f"Error generating heatmap: {e}")
+        save_progress(task_id, {
+            'progress': 100, 'status': 'ERROR',
+            'error': f"Error generating heatmap: {e}",
+            'sea_calculated': True, 'best_similarity_calculated': True,
+            'heatmap_calculated': False, 'failed': True,
+        })
+        raise
+
+    save_progress(task_id, {
+        'progress': 100, 'status': 'SUCCESS', 'error': None,
+        'sea_calculated': True, 'best_similarity_calculated': True,
+        'heatmap_calculated': True, 'failed': False,
+    })
+    print(f"Post-processing completed for task {task_id}")
+    return {"task_id": task_id, "status": "SUCCESS"}
+
+
+
+
+@shared_task(name="sea.similarity_task")
+def sea_similarity_score( input, target_chembl_id, save_folder,
+                        tc_cutoff = 0.57, 
+                        mean_para = 4.24 * 10 ** -4, 
+                        std_coef = 4.49 * 10 ** -3, 
+		                std_exp = 0.665, 
+                        radius = 2, 
+                        fpSize = 2048, 
+                        useFeatures = False):
+    data_test, mol_test = get_smiles_property(input)
+    print("Calculating similarity for target:", target_chembl_id)
+    known = pd.read_csv(f"{os.getenv("SEA_DATA_FOLDER")}/{target_chembl_id}.tsv", sep = "\t", index_col = 0)
+    similarity = known_test_tc(known, data_test, fpSize)
+    result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(), 
+                          columns = data_test["Name"].tolist())
+    result = result.T
+    known.index = known["molecule_chembl_id"].tolist()
+    best_similarity = pd.DataFrame()
+    best_similarity["Name"] = list(result.index)
+    best_similarity["SMILES"] = data_test["SMILES"].tolist()
+    best_similarity["Target_Chembl_Id"] = [known["target_chembl_id"].tolist()[0]] * best_similarity.shape[0]
+    best_similarity["Target_Name"] = [known["target_name"].tolist()[0]] * best_similarity.shape[0]
+    best_similarity["Most_similar_known"] = list(result.idxmax(axis = "columns"))
+    best_similarity["Tanimoto_Coefficient"] = list(result.max(axis = 1))
+    best_similarity["Known_Hit_SMILES"] = [known.loc["{}".format(name), "canonical_smiles"] for name in result.idxmax(axis = "columns")] 
+    best_similarity = best_similarity.sort_values(by = ["Tanimoto_Coefficient"], ascending = False, ignore_index = True)
+    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.7]
+    best_similarity.to_csv(f"{save_folder}/best_similar_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
+    
+    # get top 10 similarity matrix
+    summary_tc = []
+    summary_ref = []
+    summary_known = []
+    summary_ref_smiles = []
+    summary_known_smiles = []
+    result = pd.DataFrame(np.round(similarity, 4), columns = data_test["Name"].tolist())
+    ref_compound = list(result.columns)
+    known_compound = list(result.index)
+    result["Known"] = known["molecule_chembl_id"].tolist()
+    for idxC in np.arange(result.shape[1] - 1) : 
+        top10 = result.sort_values(by = ["{}".format(ref_compound[idxC])], ascending = False, ignore_index = True).head(10)
+        summary_tc += top10["{}".format(ref_compound[idxC])].tolist() 
+        summary_ref += [ref_compound[idxC]] * top10.shape[0] 
+        summary_known += top10["Known"].tolist()
+        summary_ref_smiles += [data_test["SMILES"].to_numpy()[np.where(data_test["Name"].to_numpy() == ref_compound[idxC])[0]][0]] * top10.shape[0] 
+        summary_known_smiles += [known.loc["{}".format(name), "canonical_smiles"] for name in top10["Known"].tolist()]
+    similarity_matrix = pd.DataFrame()
+    similarity_matrix["Name"] = summary_ref
+    similarity_matrix["Tanimoto_Score"] = summary_tc
+    similarity_matrix["SMILES"] = summary_ref_smiles
+    similarity_matrix["Known_Hit_ID"] = summary_known
+    similarity_matrix["Known_Hit_SMILES"] = summary_known_smiles
+    similarity_matrix = similarity_matrix.sort_values(by = ["Name", "Tanimoto_Score"], ascending = [True, False], ignore_index = True)
+ 
+    similarity_matrix.to_csv(f"{save_folder}/top10_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
+    return "Similarity calculation completed for target: {}".format(target_chembl_id)
+
+
+
+
+@celery.task(name="main.cleanup_task")
+def cleanup_task(*args, **kwargs):
+   
+    save_folder = os.environ.get("SEA_JOB_DIR")
+    # keep the last 30 jobs in the folder or remove the job folder what are older than 1 day
+    if len(os.listdir(save_folder)) < 30:
+        return "No cleanup needed."
+    
+    import shutil
+    import time
+    for dir in os.listdir(save_folder):
+        dir_path = os.path.join(save_folder, dir)
+        if os.path.isdir(dir_path):
+            dir_time = os.path.getmtime(dir_path)
+            if (time.time() - dir_time) > 86400 and len(os.listdir(save_folder)) > 30:  # 1 day 
+                shutil.rmtree(dir_path)
+                print(f"Removed old job folder: {dir_path}")
+    return "Cleanup completed."
+
+celery.conf.beat_schedule = {
+    'daily-cleanup-task': {
+        'task': 'main.cleanup_task',
+        'schedule': crontab(minute=10, hour='*'),  # Run every hour
+    },
+}
+
+celery.conf.timezone = 'UTC'
+
+
+
+
+
+
+
+
+
+
+
+
+

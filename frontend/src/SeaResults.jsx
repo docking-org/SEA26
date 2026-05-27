@@ -407,21 +407,25 @@ export default function Result() {
                             className="h-full rounded-full transition-all duration-500 ease-out flex items-center justify-end pr-2"
                             style={{
                                 width: `${percent1Done}%`,
-                                backgroundColor: percent1Done === 100 ? '#10b981' : '#3b82f6'
+                                backgroundColor: taskStatus === 'SUCCESS' ? '#10b981' : '#3b82f6'
                             }}
                         >
                             {percent1Done > 10 && (
                                 <span className="text-xs font-bold text-white">
-                                    {percent1Done === 100 ? '✓' : ''}
+                                    {taskStatus === 'SUCCESS' ? '✓' : ''}
                                 </span>
                             )}
                         </div>
                     </div>
                     <p className="text-xs text-gray-500 mt-1">
-                        {percent1Done === 100 ? 'Task completed successfully!' : 'Please wait while we process your request...'}
+                        {taskStatus === 'SUCCESS'
+                            ? 'Task completed successfully!'
+                            : percent1Done === 100
+                                ? 'Postprocessing results...'
+                                : 'Please wait while we process your request...'}
                     </p>
                 </div>
-                {percent1Done === 100 && result.length === 0 && (
+                {taskStatus === 'SUCCESS' && result.length === 0 && (
                     <div className="p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
                         No results found for this task.
                     </div>
@@ -445,48 +449,61 @@ export default function Result() {
                         </a>
                         <h2 className="mt-6 mb-2 text-xl font-semibold">Results:</h2>
                         <div className="overflow-x-auto rounded-lg shadow">
-                            <table className="min-w-full divide-y divide-gray-200 bg-white">
-                                <thead className="bg-blue-100">
-                                    <tr>
-                                        {Object.keys(result[0]).map((key) => (
-                                            <th
-                                                key={key}
-                                                className="px-4 py-2 text-left text-sm font-bold text-blue-700 uppercase tracking-wider border-b"
-                                            >
-                                                {key}
-                                            </th>
-                                        ))}
-                                    </tr>
-                                </thead>
-                                <tbody> 
-                                    {result.map((item, index) => (
-                                        <tr
-                                            key={index}
-                                            className={index % 2 === 0 ? "bg-blue-50" : "bg-white"}
-                                        >
-                                            {Object.values(item).map((value, i) => (
-                                                <td
-                                                    key={i}
-                                                    className="px-4 py-2 text-sm text-gray-700 border-b"
+                            {(() => {
+                                const displayColumns = [
+                                    'Target_Chembl_ID',
+                                    'Target_Name',
+                                    'Uniprot_ID',
+                                    'Target_Species',
+                                    'Z_score',
+                                    'p(P_value)',
+                                ];
+                                const columns = displayColumns.filter((col) => col in result[0]);
+                                return (
+                                    <table className="min-w-full divide-y divide-gray-200 bg-white">
+                                        <thead className="bg-blue-100">
+                                            <tr>
+                                                {columns.map((key) => (
+                                                    <th
+                                                        key={key}
+                                                        className="px-4 py-2 text-left text-sm font-bold text-blue-700 uppercase tracking-wider border-b"
+                                                    >
+                                                        {key}
+                                                    </th>
+                                                ))}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {result.map((item, index) => (
+                                                <tr
+                                                    key={index}
+                                                    className={index % 2 === 0 ? "bg-blue-50" : "bg-white"}
                                                 >
-                                                    {i === 0 ? (
-                                                        <a 
-                                                            href={`/result?taskId=${taskId}&targetChemblId=${value}`} 
-                                                            className="text-blue-600 hover:text-blue-800 underline"
-                                                            target='_blank'
-                                                            rel="noopener noreferrer"
+                                                    {columns.map((col) => (
+                                                        <td
+                                                            key={col}
+                                                            className="px-4 py-2 text-sm text-gray-700 border-b"
                                                         >
-                                                            {value}
-                                                        </a>
-                                                    ) : (
-                                                        value
-                                                    )}
-                                                </td>
+                                                            {col === 'Target_Chembl_ID' ? (
+                                                                <a
+                                                                    href={`/result?taskId=${taskId}&targetChemblId=${item[col]}`}
+                                                                    className="text-blue-600 hover:text-blue-800 underline"
+                                                                    target='_blank'
+                                                                    rel="noopener noreferrer"
+                                                                >
+                                                                    {item[col]}
+                                                                </a>
+                                                            ) : (
+                                                                item[col]
+                                                            )}
+                                                        </td>
+                                                    ))}
+                                                </tr>
                                             ))}
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                                        </tbody>
+                                    </table>
+                                );
+                            })()}
                         </div>
                     </div>
                 )}
