@@ -1,6 +1,7 @@
 from celery import Celery, current_task, shared_task, chord, current_app, group
 from celery.result import GroupResult
 from celery.schedules import crontab
+from celery.signals import worker_ready
 import pandas as pd
 import numpy as np
 import redis
@@ -28,6 +29,11 @@ redis_cache = redis.Redis(
 )
 
 r = redis.from_url(os.getenv("CELERY_BROKER_URL", "redis://redis:6380/0"), db=0)
+
+@worker_ready.connect
+def on_worker_ready(**kwargs):
+    """Warm the Redis target cache when the Celery worker starts."""
+    warm_target_cache.delay()
 
 def get_cached_target(target_file):
     """Get target DataFrame from Redis cache, or load from disk if not cached."""
