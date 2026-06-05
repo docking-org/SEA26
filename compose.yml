@@ -70,7 +70,7 @@ services:
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
-    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=20 --max-tasks-per-child=30
+    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=60 --max-tasks-per-child=30
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
