@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-
+import 'altcha';
 
 import Layout from "./components/Layout"
 
@@ -15,10 +15,29 @@ function HomePage() {
   const [querySubsetTargets, setQuerySubsetTargets] = useState('');
   const [queryCustom, setQueryCustom] = useState('');
   const advancedMenuRef = useRef(null);
+  const altchaRef = useRef(null);
+  const [altchaPayload, setAltchaPayload] = useState(null);
+  const [altchaVerified, setAltchaVerified] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isValid, setIsValid] = useState(true);
   const [hideAdvanceMenu, sethideAdvanceMenu] = useState(true);
   const [errorMessage, setErrorMessage] = useState(''); // NEW: error message state
+
+  useEffect(() => {
+    const widget = altchaRef.current;
+    if (!widget) return;
+    const handleStateChange = (ev) => {
+      if (ev.detail.state === 'verified' && ev.detail.payload) {
+        setAltchaPayload(ev.detail.payload);
+        setAltchaVerified(true);
+      } else {
+        setAltchaPayload(null);
+        setAltchaVerified(false);
+      }
+    };
+    widget.addEventListener('statechange', handleStateChange);
+    return () => widget.removeEventListener('statechange', handleStateChange);
+  }, []);
 
   function toggleAdvancedMenu() {
     setShowAdvanced(!showAdvanced);
@@ -78,11 +97,16 @@ function HomePage() {
       return;
     }
 
+    if (!altchaPayload) {
+      setErrorMessage('Please complete the CAPTCHA verification first.');
+      return;
+    }
+
     setIsLoading(true);
-    
+
     // Process input to add compound IDs if needed
     const processedQuery = processInput(query);
-    
+
     const formData = {
       query: processedQuery,
       fingerprint_type: fingerprintType,
@@ -90,10 +114,11 @@ function HomePage() {
       reference_custom_targets: referenceCustomTargets,
       query_target: queryTarget,
       query_subset_targets: querySubsetTargets,
-      query_custom: queryCustom
+      query_custom: queryCustom,
+      altcha: altchaPayload,
     };
     console.log('Form submitted with data:', formData);
-    
+
     try {
       const resp = await fetch('/api/submit', {
         method: 'POST',
@@ -102,6 +127,17 @@ function HomePage() {
         },
         body: JSON.stringify(formData),
       });
+
+      if (!resp.ok) {
+        const errorData = await resp.json().catch(() => ({}));
+        setIsLoading(false);
+        setErrorMessage(errorData.detail || 'Submission failed. Please try again.');
+        if (altchaRef.current) altchaRef.current.reset();
+        setAltchaPayload(null);
+        setAltchaVerified(false);
+        return;
+      }
+
       const result = await resp.json();
       console.log('Server response:', result.task_id);
       if (result.task_id) {
@@ -113,6 +149,9 @@ function HomePage() {
     } catch (error) {
       setIsLoading(false);
       setErrorMessage('Network error. Please try again.');
+      if (altchaRef.current) altchaRef.current.reset();
+      setAltchaPayload(null);
+      setAltchaVerified(false);
     }
   } 
   
@@ -385,6 +424,14 @@ HDAC1 [O-]C(=O)CCC butyrate`}
               </div>
             )}
 
+            {/* ALTCHA Captcha Widget */}
+            <div className="mt-6 flex justify-center">
+              <altcha-widget
+                ref={altchaRef}
+                challenge="/api/captcha/challenge"
+              ></altcha-widget>
+            </div>
+
             <div className="mt-10 flex items-center justify-center gap-x-6">
               {isLoading ? (
                 <div className="flex items-center gap-2">
@@ -396,10 +443,10 @@ HDAC1 [O-]C(=O)CCC butyrate`}
               ) : (
                 <button
                   onClick={handleSubmit}
-                  disabled={isLoading || query.trim().length === 0}
+                  disabled={isLoading || query.trim().length === 0 || !altchaVerified}
                   className={`rounded-md px-3.5 py-2.5 text-md font-semibold text-white shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 ${
-                    query.trim().length === 0 
-                      ? 'bg-gray-400 cursor-not-allowed' 
+                    query.trim().length === 0 || !altchaVerified
+                      ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-blue-400 hover:bg-indigo-400'
                   }`}
                 >

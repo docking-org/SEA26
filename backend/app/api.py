@@ -9,7 +9,7 @@ from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException
 from fastapi import Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 
 from celery.utils.log import get_task_logger
 from dotenv import load_dotenv, find_dotenv
+from altcha import create_challenge_v1, verify_solution_v1
 
 # import sea analysis functions
 import numpy as np
@@ -83,9 +84,28 @@ task_logger = get_task_logger(__name__)
 def read_root() -> dict[str, Union[str, int]]:
     return {"msg": "Welcome to SEA", "version": 1}
 
+@router.get("/captcha/challenge")
+def get_captcha_challenge():
+    """Generate a new ALTCHA proof-of-work challenge."""
+    hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
+    if not hmac_secret:
+        raise HTTPException(status_code=500, detail="ALTCHA not configured")
+    challenge = create_challenge_v1(hmac_key=hmac_secret, max_number=100000)
+    return challenge.to_dict()
+
 @router.post("/submit")
 async def submit_task(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     input_data = await request.json()
+
+    # Verify ALTCHA captcha
+    altcha_payload = input_data.get("altcha")
+    if not altcha_payload:
+        raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+    hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
+    verified, err = verify_solution_v1(altcha_payload, hmac_secret)
+    if not verified:
+        raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
+
     task_id = str(uuid.uuid4())
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
     _mkdir_(job_dir)
