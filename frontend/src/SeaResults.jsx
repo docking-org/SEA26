@@ -218,7 +218,7 @@ export default function Result() {
         // Display all data or data for selected query compound
         return (
             <Layout>
-            <div className="min-h-screen bg-gray-100 p-8">
+            <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
                 <div className="max-w-7xl mx-auto">
                     <Link 
                         to={`/result?taskId=${taskId}`}
@@ -227,11 +227,11 @@ export default function Result() {
                         ← Back to all results
                     </Link>
 
-                    <div className="bg-white rounded-lg shadow-lg p-6 mt-4">
+                    <div className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mt-4">
                      
                         <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-4">
                             <div>
-                                <h2 className="text-2xl font-bold text-gray-800">Tanimoto Similarity Results</h2>
+                                <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Tanimoto Similarity Results</h2>
                                 <div className="flex flex-col md:flex-row md:items-center mb-6 gap-4">
                                     <p className="text-sm text-gray-600 mr-4">Query Compound:</p>
                                     <select
@@ -335,7 +335,7 @@ export default function Result() {
                                             <td className="p-3">
                                                 {moleculeImages[item.Known_Hit_ID] ? (
                                                     <div
-                                                        className="w-48 h-48"
+                                                        className="w-24 h-24 sm:w-36 sm:h-36 md:w-48 md:h-48"
                                                         dangerouslySetInnerHTML={{ __html: moleculeImages[item.Known_Hit_ID] }}
                                                     />
                                                 ) : (
@@ -358,7 +358,7 @@ export default function Result() {
                                             {[0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0].map((val) => (
                                                 <div
                                                     key={val}
-                                                    className="w-12 h-8 border border-gray-300 flex items-center justify-center text-xs font-semibold"
+                                                    className="w-8 h-6 sm:w-12 sm:h-8 border border-gray-300 flex items-center justify-center text-[10px] sm:text-xs font-semibold"
                                                     style={{ 
                                                         backgroundColor: getColor(val),
                                                         color: getTextColor(val)
@@ -392,7 +392,7 @@ export default function Result() {
     return (
         <Layout>
         <div className="flex-col items-center justify-center min-h-screen py-2 text-gray-700">
-            <div className="mt-5 px-10 py-5 bg-gray-50 " >
+            <div className="mt-5 px-4 py-4 sm:px-10 sm:py-5 bg-gray-50" >
                 <h1 className="text-2xl  font-bold mb-4">Result Page</h1>
                 <p className="mb-2">Your task ID is: {taskId}</p>
                 
@@ -433,20 +433,21 @@ export default function Result() {
            
                 {percent1Done === 100 && result.length > 0 && (
                     <div>
+                        <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 my-4">
                         <a
                             href={`/api/download?taskId=${taskId}`}
-                            className="inline-block my-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-bold no-underline"
+                            className="inline-block px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-bold no-underline text-sm sm:text-base text-center"
                             download
                         >
                             Download Results (ZIP)
                         </a>
-                        &nbsp;
-                        <a 
-                            href={`/compoundVStarget?taskId=${taskId}`} 
-                            className="inline-block my-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-bold no-underline"
+                        <a
+                            href={`/compoundVStarget?taskId=${taskId}`}
+                            className="inline-block px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 font-bold no-underline text-sm sm:text-base text-center"
                         >
                             Compound VS Targets
                         </a>
+                        </div>
                         <h2 className="mt-6 mb-2 text-xl font-semibold">Results:</h2>
                         <div className="overflow-x-auto rounded-lg shadow">
                             {(() => {
@@ -466,7 +467,7 @@ export default function Result() {
                                                 {columns.map((key) => (
                                                     <th
                                                         key={key}
-                                                        className="px-4 py-2 text-left text-sm font-bold text-blue-700 uppercase tracking-wider border-b"
+                                                        className="px-2 py-2 sm:px-4 text-left text-xs sm:text-sm font-bold text-blue-700 uppercase tracking-wider border-b"
                                                     >
                                                         {key}
                                                     </th>
@@ -482,7 +483,7 @@ export default function Result() {
                                                     {columns.map((col) => (
                                                         <td
                                                             key={col}
-                                                            className="px-4 py-2 text-sm text-gray-700 border-b"
+                                                            className="px-2 py-2 sm:px-4 text-xs sm:text-sm text-gray-700 border-b"
                                                         >
                                                             {col === 'Target_Chembl_ID' ? (
                                                                 <a

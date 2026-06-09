@@ -161,10 +161,10 @@ function HomePage() {
       <div 
         ref={advancedMenuRef}
         // tabIndex="-1"
-        className="relative inline-block text-left w-full text-amber-950 px-10 py-6 mt-5 border border-gray-300 bg-teal-50 rounded-md shadow-sm focus:outline-none focus:ring-2" 
+        className="relative inline-block text-left w-full text-amber-950 px-4 py-4 sm:px-10 sm:py-6 mt-5 border border-gray-300 bg-teal-50 rounded-md shadow-sm focus:outline-none focus:ring-2"
         id='advanced-menu'
       >
-        <h3 className='text-2xl mb-4'>Advanced Options</h3>
+        <h3 className='text-xl sm:text-2xl mb-4'>Advanced Options</h3>
         
         <div className="mt-4">
           <label className="block font-medium text-gray-700">
@@ -324,18 +324,18 @@ HDAC1 [O-]C(=O)CCC butyrate`}
     <Layout>
         {/* Your main application components go here */}
         <div className="flex-col items-center justify-center min-h-screen py-2">
-        <div className="mt-5 px-10 py-5">
-          <h1 className="text-5xl font-semibold tracking-tight text-balance text-teal-100 sm:text-7xl">
+        <div className="mt-5 px-4 py-4 sm:px-10 sm:py-5">
+          <h1 className="text-3xl font-semibold tracking-tight text-balance text-teal-100 sm:text-5xl lg:text-7xl">
             Similarity Ensemble Approach
           </h1>
-          <p className="mt-8 text-3xl font-medium text-pretty text-green-100 sm:text-xl/8">
+          <p className="mt-6 text-base font-medium text-pretty text-green-100 sm:text-lg md:text-xl/8">
             The Similarity Ensemble Approach (SEA) relates proteins based on the set-wise chemical similarity among their ligands. 
             It can be used to rapidly search large compound databases and to build cross-target similarity maps.
           </p>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-5">
-            <div className="text-md pt-2">
-              <p className="text-md pt-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8 mt-5">
+            <div className="text-sm sm:text-md pt-2">
+              <p className="text-sm sm:text-md pt-2">
                 SEA is provided by the <a href="https://bkslab.org" className="underline hover:text-blue-300">Shoichet Laboratory</a> in the Department of Pharmaceutical Chemistry at the University of California, San Francisco (UCSF).<br/>
                 You can try SEA yourself via the online SEA search tool.
               </p>
@@ -350,9 +350,9 @@ HDAC1 [O-]C(=O)CCC butyrate`}
               </blockquote>
             </div>
 
-            <div className="text-md pt-2">
+            <div className="text-sm sm:text-md pt-2">
               <h2 className="font-semibold mb-2">Caveat Emptor</h2>
-              <p className="text-md">
+              <p className="text-sm sm:text-md">
                 SEA is provided free-of-charge in the hope that it will be useful, but you must use it at your own risk. We make no guarantees about data confidentiality on this public service website.<br/>
                 If you would like to use SEA securely, please contact support+sea*bkslab*org.<br/>
                 To determine whether SEA&rsquo;s predictions for your compounds are already known, we recommend you visit the extensive K<sub>i</sub> Database at the NIMH Psychoactive Drug Screening Program.
@@ -362,7 +362,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
 
           <div className="mt-8">
             <div>
-              <h2 className="text-3xl font-medium text-pretty text-green-100 sm:text-xl/8">Run SEA</h2>
+              <h2 className="text-xl font-medium text-pretty text-green-100 sm:text-xl/8">Run SEA</h2>
               <div>
               {hideAdvanceMenu ? (
                 <p></p>
@@ -406,7 +406,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
             {!showAdvanced && (
               <div className="mt-3">
                 <p className="text-pretty mb-2">Examples:</p>
-                <p className="text-pretty">
+                <p className="text-pretty text-sm sm:text-base break-all sm:break-normal">
                   CNCCC(c1ccccc1)Oc2ccc(cc2)C(F)(F)F fluoxetine<br/>
                   Cn1cnc2c1c(=O)n(c(=O)n2C)C caffeine
                 </p>
