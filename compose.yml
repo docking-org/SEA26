@@ -1,5 +1,10 @@
+# Base compose — shared service definitions.
+# Use with an override file:
+#   Dev:  docker compose -f compose.yml -f compose.dev.yml up --build
+#   Prod: docker compose -f compose.yml -f compose.prod.yml up --build -d
+
 services:
-#### REDIS ####  
+#### REDIS ####
   redis:
     image: redis:latest
     container_name: sea-redis
@@ -17,14 +22,13 @@ services:
 
 #### REDIS BEAT SCHEDULER ####
   redisbeat:
-    build: .
     container_name: sea-redisbeat
     restart: unless-stopped
     networks:
       - ocean
     environment:
       - CELERY_BROKER_URL=${CELERY_BROKER_URL}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND} 
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
     depends_on:
       redis:
         condition: service_healthy
@@ -35,7 +39,6 @@ services:
 
 #### WEB APPLICATION ####
   web:
-    build: .
     container_name: sea-web
     restart: unless-stopped
     networks:
@@ -52,14 +55,12 @@ services:
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - ALTCHA_HMAC_SECRET=${ALTCHA_HMAC_SECRET}
       - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE}
-    command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --workers 5
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
 
 #### REDIS WORKER ####
   redisworker:
-    build: .
     container_name: sea-redisworker
     restart: unless-stopped
     networks:
@@ -72,7 +73,6 @@ services:
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
-    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=30 --max-tasks-per-child=10
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
@@ -88,7 +88,3 @@ networks:
 ##### ----- VOLUMES ----- #####
 volumes:
   beat_scheduler:
-
-
-
-

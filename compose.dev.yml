@@ -1,0 +1,96 @@
+# Development compose — standalone
+# Usage: docker compose -f compose.dev.yml up --build
+
+services:
+#### REDIS ####
+  redis:
+    image: redis:latest
+    container_name: sea-redis
+    restart: unless-stopped
+    networks:
+      - ocean
+    command: redis-server --port ${REDIS_PORT}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT}", "ping"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+
+#### REDIS BEAT SCHEDULER ####
+  redisbeat:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sea-redisbeat
+    restart: unless-stopped
+    networks:
+      - ocean
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A backend.app.celery_worker beat -l info -s /tmp/sea-celerybeat-schedule
+    volumes:
+      - beat_scheduler:/tmp
+
+#### WEB APPLICATION ####
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sea-web
+    restart: unless-stopped
+    networks:
+      - ocean
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "5055:5055"
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
+      - SEA_JOB_DIR=${SEA_JOB_DIR}
+      - ALTCHA_HMAC_SECRET=${ALTCHA_HMAC_SECRET}
+      - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE}
+    command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5055 --reload
+    volumes:
+      - ./backend:/home/sea/backend
+      - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
+      - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
+
+#### REDIS WORKER ####
+  redisworker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sea-redisworker
+    restart: unless-stopped
+    networks:
+      - ocean
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - SEA_JOB_DIR=${SEA_JOB_DIR}
+      - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
+    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=info --concurrency=10 --max-tasks-per-child=10
+    volumes:
+      - ./backend:/home/sea/backend
+      - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
+      - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
+
+##### ----- NETWORKS ------ #####
+networks:
+  ocean:
+    driver: bridge
+
+##### ----- VOLUMES ----- #####
+volumes:
+  beat_scheduler:
