@@ -28,7 +28,7 @@ from celery import group, chord
 from celery.result import AsyncResult, GroupResult
 import pickle
 from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache, acquire_job_slot, release_job_slot, RateLimitExceeded
-from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress, load_gev_params
+from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress, load_gev_params, validate_smiles_input
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
 load_dotenv(find_dotenv())
@@ -97,6 +97,12 @@ def get_captcha_challenge():
 @router.post("/submit")
 async def submit_task(request: Request) -> dict[str, str]:
     input_data = await request.json()
+    query = input_data["query"]
+
+    invalid_smiles = validate_smiles_input(query)
+    if invalid_smiles:
+        lines_detail = "; ".join([f"Line {line_num}: '{line}'" for line_num, line in invalid_smiles])
+        raise HTTPException(status_code=400, detail=f"Invalid SMILES input. Please check the following lines: {lines_detail}")
 
     # Verify ALTCHA captcha
     altcha_payload = input_data.get("altcha")
@@ -117,7 +123,7 @@ async def submit_task(request: Request) -> dict[str, str]:
     except RateLimitExceeded:
         return JSONResponse(status_code=429, content={"detail": "Server is busy. Please try again later."})
 
-    result = await _submit_sea_job(task_id, input_data["query"])
+    result = await _submit_sea_job(task_id, query)
     if "error" in result:
         release_job_slot(task_id)
     return {"task_id": task_id}
@@ -375,7 +381,7 @@ async def spa_exception_handler(request: Request, exc: StarletteHTTPException):
     # For 404 errors, serve index.html (let React Router handle it)
     if exc.status_code == 404:
         return FileResponse(os.path.join(frontend_path, "index.html"))
-    # For other HTTP errors, raise them normally
-    return exc
+    # For other HTTP errors, return a proper JSON response
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

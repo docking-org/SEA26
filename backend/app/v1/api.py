@@ -10,7 +10,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, APIRouter
-from fastapi import Request, BackgroundTasks
+from fastapi import Request, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -26,7 +26,7 @@ from celery import group, chord
 from celery.result import AsyncResult, GroupResult
 import pickle
 from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache
-from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress
+from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress, validate_smiles_input
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
 load_dotenv(find_dotenv())
@@ -86,12 +86,25 @@ def read_root() -> dict[str, Union[str, int]]:
 @router.post("/submit")
 async def submit_task(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     input_data = await request.json()
+    query = input_data["query"]
+
+    # Validate SMILES before queuing the job
+    invalid_smiles = validate_smiles_input(query)
+    if invalid_smiles:
+        lines_detail = "; ".join(
+            f"line {e['line']}: {e['input']}" for e in invalid_smiles
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid SMILES found — {lines_detail}",
+        )
+
     task_id = str(uuid.uuid4())
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
     _mkdir_(job_dir)
     init_progress_file(task_id)
     # time this function to simulate a long-running task
-    background_tasks.add_task(_submit_sea_job, task_id, input_data["query"])
+    background_tasks.add_task(_submit_sea_job, task_id, query)
     return {"task_id": task_id}
 
 

@@ -43,7 +43,7 @@ function HomePage() {
     setShowAdvanced(!showAdvanced);
   }
 
-  // NEW: Process input to add compound IDs if missing
+  // Process input to add compound IDs if missing
   function processInput(inputString) {
     if (!inputString || inputString.trim().length === 0) {
       return inputString;
@@ -284,7 +284,7 @@ function HomePage() {
             </pre>
             
             <p className="mb-2">ZINC ID can also be used. For example:</p>
-            <pre className="whitespace-pre font-mono text-sm bg-gray-100 p-4 rounded-lg overflow-x-auto">
+            <pre className="whitespace-pre font-mono text-sm text-teal-950 bg-gray-100 p-4 rounded-lg overflow-x-auto">
 {`ZINC000431131405
 ZINC000276896078
 NCCc1c[nH]c2ccc(O)cc12  serotonin
@@ -389,13 +389,13 @@ HDAC1 [O-]C(=O)CCC butyrate`}
                       value={query}
                       onChange={handleQueryChange}
                       placeholder="Paste SMILES or try example below"
-                      className={`mt-2 py-2 px-3 w-full border backdrop-blur-2xl rounded-md focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-100 ${
+                      className={`mt-2 py-2 px-3 w-full border backdrop-blur-2xl rounded-md text-teal-950 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-100 ${
                         !isValid ? 'border-red-500 bg-red-50' : 'border-gray-300'
                       }`}
                     />
                     {/* Error message display */}
                     {errorMessage && (
-                      <p className="mt-2 text-red-400 text-sm font-medium">
+                      <p className="mt-2 text-red-400 text-sm font-medium bg-lime-100 border-rounded-md p-2">
                         ⚠️ {errorMessage}
                       </p>
                     )}
@@ -406,8 +406,8 @@ HDAC1 [O-]C(=O)CCC butyrate`}
 
             {!showAdvanced && (
               <div className="mt-3">
-                <p className="text-pretty mb-2">Examples:</p>
-                <p className="text-pretty text-sm sm:text-base break-all sm:break-normal">
+                <p className="text-pretty text-teal-900 mb-2">Examples:</p>
+                <p className="text-pretty text-sm text-teal-950 sm:text-base break-all sm:break-normal">
                   CNCCC(c1ccccc1)Oc2ccc(cc2)C(F)(F)F fluoxetine<br/>
                   Cn1cnc2c1c(=O)n(c(=O)n2C)C caffeine
                 </p>

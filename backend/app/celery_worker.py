@@ -11,7 +11,6 @@ import pickle
 from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress, get_progress
 from dotenv import load_dotenv, find_dotenv
 import os
-from redis.maint_notifications import MaintNotificationsConfig
 
 load_dotenv(find_dotenv())
 

@@ -41,6 +41,41 @@ np.set_printoptions(suppress=True)
 ## Helper function
 ################################################################
 
+def validate_smiles(smiles):
+	'''validate smiles string'''
+	try:
+		mol = Chem.MolFromSmiles(smiles)
+		if mol is not None:
+			return Chem.MolToSmiles(mol)
+		else:
+			return None
+	except Exception as e:
+		print(f"Error validating SMILES: {e}")
+		return None
+
+def validate_smiles_input(input_text):
+	"""Validate all SMILES in multi-line input text.
+
+	Returns a list of (line_number, line_text) tuples for invalid entries.
+	Lines starting with ZINC IDs are skipped (looked up separately).
+	For 3-column format (target_id smiles compound_id), validates column 2.
+	"""
+	invalid = []
+	lines = [x.strip() for x in input_text.strip().splitlines() if x.strip()]
+	for i, line in enumerate(lines):
+		parts = line.split()
+		# 3-column format: target_id smiles compound_id
+		if len(parts) >= 3:
+			smiles_str = parts[1]
+		else:
+			smiles_str = parts[0]
+		# Skip ZINC IDs
+		if smiles_str.upper().startswith("ZINC"):
+			continue
+		if validate_smiles(smiles_str) is None:
+			invalid.append((i + 1, line))
+	return invalid
+
 def _list_(files, output) :
 	'''list files'''
 	cmd = '''ls {} > {}'''.format(files, output)
