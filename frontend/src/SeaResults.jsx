@@ -17,6 +17,7 @@ export default function Result() {
     const [sortBy, setSortBy] = useState('score');
     const [activeButton, setActiveButton] = useState(false);
     const [taskStatus, setTaskStatus] = useState(null);
+    const [errorMessage, setErrorMessage] = useState(null);
 
     // RDkit images
     const [rdkitReady, setRdkitReady] = useState(false);
@@ -70,6 +71,10 @@ export default function Result() {
                 setPercent1Done(100);
                 setResult(data.result);
                 console.log('Task completed:', data);
+            }
+            else if (data.status === 'ERROR') {
+                setErrorMessage(data.error || 'Task failed.');
+                console.log('Task failed:', data);
             }
             else if (data.status === 'RUNNING' || data.status === 'PENDING') {
                 setPercent1Done(data.progress);
@@ -407,7 +412,7 @@ export default function Result() {
                             className="h-full rounded-full transition-all duration-500 ease-out flex items-center justify-end pr-2"
                             style={{
                                 width: `${percent1Done}%`,
-                                backgroundColor: taskStatus === 'SUCCESS' ? '#10b981' : '#3b82f6'
+                                backgroundColor: taskStatus === 'SUCCESS' ? '#10b981' : taskStatus === 'ERROR' ? '#ef4444' : '#3b82f6'
                             }}
                         >
                             {percent1Done > 10 && (
@@ -420,11 +425,19 @@ export default function Result() {
                     <p className="text-xs text-gray-500 mt-1">
                         {taskStatus === 'SUCCESS'
                             ? 'Task completed successfully!'
-                            : percent1Done === 100
-                                ? 'Postprocessing results...'
-                                : 'Please wait while we process your request...'}
+                            : taskStatus === 'ERROR'
+                                ? 'Task failed.'
+                                : percent1Done === 100
+                                    ? 'Postprocessing results...'
+                                    : 'Please wait while we process your request...'}
                     </p>
                 </div>
+                {taskStatus === 'ERROR' && (
+                    <div className="p-4 bg-red-100 border-l-4 border-red-500 text-red-700 mb-4">
+                        <p className="font-medium">Task Failed</p>
+                        <p className="text-sm">{errorMessage}</p>
+                    </div>
+                )}
                 {taskStatus === 'SUCCESS' && result.length === 0 && (
                     <div className="p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
                         No results found for this task.

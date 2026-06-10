@@ -51,6 +51,7 @@ services:
       - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - ALTCHA_HMAC_SECRET=${ALTCHA_HMAC_SECRET}
+      - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE}
     command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --workers 5
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
@@ -71,7 +72,7 @@ services:
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
-    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=40 --max-tasks-per-child=30
+    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=30 --max-tasks-per-child=10
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}

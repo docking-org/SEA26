@@ -163,7 +163,7 @@ async def _submit_sea_job(task_id: str, input_data: dict):
     except Exception as e:
         print(f"Error submitting SEA job: {e}")
         save_progress(task_id, {
-                            "status": "ERROR",
+                            "status": "FAILED",
                             "progress": 0, 
                             "total_targets": 0,
                             "error": str(e),

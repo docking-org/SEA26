@@ -3,6 +3,7 @@ import sys
 import shutil
 import uuid
 import json
+import asyncio
 import pandas as pd
 from typing import Union
 from datetime import datetime
@@ -10,10 +11,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, APIRouter, HTTPException
-from fastapi import Request, BackgroundTasks
+from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from celery.utils.log import get_task_logger
 from dotenv import load_dotenv, find_dotenv
@@ -26,7 +27,7 @@ from .celery_worker import celery
 from celery import group, chord
 from celery.result import AsyncResult, GroupResult
 import pickle
-from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache
+from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache, acquire_job_slot, release_job_slot, RateLimitExceeded
 from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress, load_gev_params
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
@@ -94,7 +95,7 @@ def get_captcha_challenge():
     return challenge.to_dict()
 
 @router.post("/submit")
-async def submit_task(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+async def submit_task(request: Request) -> dict[str, str]:
     input_data = await request.json()
 
     # Verify ALTCHA captcha
@@ -110,8 +111,15 @@ async def submit_task(request: Request, background_tasks: BackgroundTasks) -> di
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
     _mkdir_(job_dir)
     init_progress_file(task_id)
-    # time this function to simulate a long-running task
-    background_tasks.add_task(_submit_sea_job, task_id, input_data["query"])
+
+    try:
+        acquire_job_slot(task_id)
+    except RateLimitExceeded:
+        return JSONResponse(status_code=429, content={"detail": "Server is busy. Please try again later."})
+
+    result = await _submit_sea_job(task_id, input_data["query"])
+    if "error" in result:
+        release_job_slot(task_id)
     return {"task_id": task_id}
 
 
@@ -190,21 +198,22 @@ async def _submit_sea_job(task_id: str, input_data: dict):
         celery.backend.store_result(
             task_id=task_id,
             result = {
-                "status": "PENDING",
+                "status": "RUNNING",
                 "completed_cnt": 0,
                 "total_targets": total,
                 "progress": 0,
-                "group_id": result.id, 
+                "group_id": result.id,
 
-            }, state="PENDING"
+            }, state="RUNNING"
         )
+        save_progress(task_id, {"status": "RUNNING"})
         end = time.time()
         print(f"Submitted SEA job {task_id} with {total} targets in {end - start:.2f} seconds")
         return {"task_id": task_id}
     except Exception as e:
         print(f"Error submitting SEA job: {e}")
         save_progress(task_id, {
-                            "status": "ERROR",
+                            "status": "FAILED",
                             "progress": 0, 
                             "total_targets": 0,
                             "error": str(e),
@@ -254,9 +263,11 @@ def get_recent_tasks():
     for task in all_tasks:
         time_stamp = datetime.fromtimestamp(os.path.getmtime(f"{job_dir}/{task}"))
         formatted_time = time_stamp.strftime("%Y-%m-%d %H:%M:%S")
+        progress = get_progress(task)
         task_info = {
             "task_id": task,
-            "time_stamp": formatted_time
+            "time_stamp": formatted_time,
+            "status": progress.get("status", "UNKNOWN") if progress else "UNKNOWN",
         }
         recent_tasks.append(task_info)
     # sort by time_stamp descending

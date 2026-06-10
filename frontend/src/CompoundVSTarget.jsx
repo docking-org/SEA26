@@ -521,7 +521,8 @@ export default function CompoundVsTarget() {
                                 marginBottom: '15px',
                                 fontSize: isMobile ? '13px' : '14px'
                             }}>
-                                <strong>Target:</strong> {displayTooltip.target}<br />
+                                <strong>Target ChEMBL ID:</strong> {displayTooltip.target.split(':')[0]}<br />
+                                <strong>Target Name:</strong> {displayTooltip.target.split(':')[1]}<br /> 
                                 <strong>Known Hit ID:</strong> {displayTooltip.hitId}<br />
                                 <strong>Tanimoto Score:</strong> {displayTooltip.score.toFixed(4)}
                             </div>

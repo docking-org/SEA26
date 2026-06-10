@@ -117,7 +117,7 @@ function HomePage() {
       query_custom: queryCustom,
       altcha: altchaPayload,
     };
-    console.log('Form submitted with data:', formData);
+    console.log('Form submitted with data:', formData['query']);
 
     try {
       const resp = await fetch('/api/submit', {
@@ -144,6 +144,7 @@ function HomePage() {
         navigate(`/result?taskId=${result.task_id}`);
       } else {
         setIsLoading(false);
+        setErrorMessage(resp.detail || 'Unexpected response from server. Please try again.');
         setErrorMessage('Failed to submit task. Please try again.');
       }
     } catch (error) {

@@ -27,6 +27,7 @@ export default function RecentTasks() {
                         <thead>
                             <tr>
                                 <th className="py-2 px-2 sm:px-4 border-b border-gray-300 text-left text-sm sm:text-base">Task ID</th>
+                                <th className="py-2 px-2 sm:px-4 border-b border-gray-300 text-left text-sm sm:text-base">Status</th>
                                 <th className="py-2 px-2 sm:px-4 border-b border-gray-300 text-left text-sm sm:text-base">Submitted At</th>
                             </tr>
                         </thead>
@@ -36,6 +37,17 @@ export default function RecentTasks() {
                                     <td className="py-2 px-2 sm:px-4 border-b border-gray-300 text-xs sm:text-sm break-all sm:break-normal">
                                         <a className="text-teal-800 hover:underline"
                                         href={`/result?taskId=${task.task_id}`}>{task.task_id}</a>
+                                    </td>
+                                    <td className="py-2 px-2 sm:px-4 border-b border-gray-300 text-xs sm:text-sm">
+                                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
+                                            task.status === 'SUCCESS' ? 'bg-green-100 text-green-800' :
+                                            task.status === 'FAILED' ? 'bg-red-100 text-red-800' :
+                                            task.status === 'RUNNING' ? 'bg-blue-100 text-blue-800' :
+                                            task.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' :
+                                            'bg-gray-100 text-gray-800'
+                                        }`}>
+                                            {task.status}
+                                        </span>
                                     </td>
                                     <td className="py-2 px-2 sm:px-4 border-b border-gray-300 text-xs sm:text-sm whitespace-nowrap">{task.time_stamp}</td>
                                 </tr>
