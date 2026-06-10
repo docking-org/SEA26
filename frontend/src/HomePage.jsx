@@ -77,6 +77,12 @@ function HomePage() {
       setErrorMessage('Please enter at least one SMILES or compound.');
       return false;
     }
+    const lineCount = inputString.trim().split('\n').filter(l => l.trim()).length;
+    if (lineCount > 10) {
+      setIsValid(false);
+      setErrorMessage(`Query is limited to 10 compounds. You entered ${lineCount}.`);
+      return false;
+    }
     setIsValid(true);
     setErrorMessage('');
     return true;

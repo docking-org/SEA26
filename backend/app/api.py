@@ -99,6 +99,11 @@ async def submit_task(request: Request) -> dict[str, str]:
     input_data = await request.json()
     query = input_data["query"]
 
+    # Limit query to 10 lines
+    non_empty_lines = [l for l in query.strip().splitlines() if l.strip()]
+    if len(non_empty_lines) > 10:
+        raise HTTPException(status_code=400, detail=f"Query is limited to 10 compounds. You submitted {len(non_empty_lines)}.")
+
     invalid_smiles = validate_smiles_input(query)
     if invalid_smiles:
         lines_detail = "; ".join([f"Line {line_num}: '{line}'" for line_num, line in invalid_smiles])
