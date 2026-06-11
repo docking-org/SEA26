@@ -456,7 +456,7 @@ export default function CompoundVsTarget() {
                                         overflow: 'hidden',
                                         textOverflow: 'ellipsis'
                                     }}>
-                                        {target}
+                                        {target.split(':')[0]}
                                     </div>
                                 ))}
                             </div>
