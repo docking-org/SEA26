@@ -501,9 +501,7 @@ export default function Result() {
                                                             {col === 'Target_Chembl_ID' ? (
                                                                 <a
                                                                     href={`/result?taskId=${taskId}&targetChemblId=${item[col]}`}
-                                                                    className="text-blue-600 hover:text-blue-800 underline"
-                                                                    target='_blank'
-                                                                    rel="noopener noreferrer"
+                                                                    className="text-blue-600 hover:text-blue-800 underline" 
                                                                 >
                                                                     {item[col]}
                                                                 </a>
