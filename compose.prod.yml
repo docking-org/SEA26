@@ -41,6 +41,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
+      args:
+        - VITE_CHEMBL_VERSION=${VITE_CHEMBL_VERSION}
     container_name: sea-web
     restart: unless-stopped
     networks:
@@ -57,6 +59,7 @@ services:
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - ALTCHA_HMAC_SECRET=${ALTCHA_HMAC_SECRET}
       - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE}
+      - VITE_CHEMBL_VERSION=${VITE_CHEMBL_VERSION}
     command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --workers 5
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}

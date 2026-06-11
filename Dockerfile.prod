@@ -2,6 +2,9 @@
 FROM node:lts AS frontend
 WORKDIR /app/frontend
 
+ARG VITE_CHEMBL_VERSION
+ENV VITE_CHEMBL_VERSION=$VITE_CHEMBL_VERSION
+
 ENV PATH /app/frontend/node_modules/.bin:$PATH
 COPY frontend/package.json ./
 RUN npm install
