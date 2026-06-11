@@ -7,7 +7,7 @@ export const metadata = {
     description: "The Similarity Ensemble Approach (SEA) relates proteins based on the set-wise chemical similarity among their ligands.",
   };
 
-  
+
 export default function Layout({ children }) {
     return (
       <div className="flex flex-col min-h-screen bg-[url('/src/assets/sea-bg.jpg')] bg-cover min-h-screen bg-slate-950 text-white overflow-hidden">

@@ -22,6 +22,7 @@ function HomePage() {
   const [isValid, setIsValid] = useState(true);
   const [hideAdvanceMenu, sethideAdvanceMenu] = useState(true);
   const [errorMessage, setErrorMessage] = useState(''); // NEW: error message state
+  const [bannerVisible, setBannerVisible] = useState(true);
 
   useEffect(() => {
     const widget = altchaRef.current;
@@ -329,7 +330,20 @@ HDAC1 [O-]C(=O)CCC butyrate`}
   
   return (
     <Layout>
+        {bannerVisible && (
+          <div className="bg-teal-400 backdrop-blur-sm text-white px-4 py-3 text-center text-lg relative rounded-t-lg -mx-6 -mt-6 mb-6 border-b border-white/20">
+            <span>SEA has been updated to ChEMBL {import.meta.env.VITE_CHEMBL_VERSION} for improved prediction accuracy. The previous version remains available <a target="_blank" href="https://seadev.docking.org" className="underline hover:text-teal-200">here</a>.</span>
+            <button
+              onClick={() => setBannerVisible(false)}
+              className="absolute right-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white text-lg leading-none cursor-pointer"
+              aria-label="Dismiss banner"
+            >
+              &times;
+            </button>
+          </div>
+        )}
         {/* Your main application components go here */}
+        <div className="text-right text-xs text-teal-300/70">ChEMBL library version: {import.meta.env.VITE_CHEMBL_VERSION}</div>
         <div className="flex-col items-center justify-center min-h-screen py-2">
         <div className="mt-5 px-4 py-4 sm:px-10 sm:py-5">
           <h1 className="text-3xl font-semibold tracking-tight text-balance text-teal-100 sm:text-5xl lg:text-7xl">
