@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import Layout from './components/Layout';
 
 // Custom hook for responsive breakpoints
@@ -94,8 +94,9 @@ export default function CompoundVsTarget() {
         score: 0
     });
     const [lockedTooltip, setLockedTooltip] = useState(null); // NEW: locked/pinned state
-
-    const { width: windowWidth } = useWindowSize();
+    const [focusedCell, setFocusedCell] = useState({ row: -1, col: -1 });
+    const heatmapRef = useRef(null);
+    const { width: windowWidth, height: windowHeight } = useWindowSize();
     
     // Responsive breakpoints
     const isMobile = windowWidth < 640;
@@ -260,6 +261,69 @@ export default function CompoundVsTarget() {
         }
     };
 
+    // Keyboard arrow navigation for heatmap
+    const handleKeyDown = (e) => {
+        if (!tableData) return;
+        const maxRow = tableData.targets.length - 1;
+        const maxCol = tableData.maxHits - 1;
+
+        let newRow = focusedCell.row;
+        let newCol = focusedCell.col;
+
+        switch (e.key) {
+            case 'ArrowUp':
+                e.preventDefault();
+                newRow = focusedCell.row <= 0 ? 0 : focusedCell.row - 1;
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                newRow = focusedCell.row >= maxRow ? maxRow : focusedCell.row + 1;
+                break;
+            case 'ArrowLeft':
+                e.preventDefault();
+                newCol = focusedCell.col <= 0 ? 0 : focusedCell.col - 1;
+                break;
+            case 'ArrowRight':
+                e.preventDefault();
+                newCol = focusedCell.col >= maxCol ? maxCol : focusedCell.col + 1;
+                break;
+            case 'Enter':
+            case ' ':
+                e.preventDefault();
+                if (focusedCell.row >= 0 && focusedCell.col >= 0) {
+                    const target = tableData.targets[focusedCell.row];
+                    const hit = tableData.hitsPerTarget[target][focusedCell.col];
+                    if (hit) handleCellClick(e, target, hit);
+                }
+                return;
+            default:
+                return;
+        }
+
+        // Initialize to 0,0 if not yet focused
+        if (focusedCell.row < 0) newRow = 0;
+        if (focusedCell.col < 0) newCol = 0;
+
+        setFocusedCell({ row: newRow, col: newCol });
+
+        // Show tooltip for the focused cell
+        const target = tableData.targets[newRow];
+        const hit = tableData.hitsPerTarget[target][newCol];
+        if (hit && !lockedTooltip) {
+            setTooltip({
+                visible: true,
+                x: 0,
+                y: 0,
+                target,
+                hitId: hit.id,
+                hitSmiles: hit.smiles,
+                score: hit.score
+            });
+        } else if (!hit && !lockedTooltip) {
+            setTooltip(prev => ({ ...prev, visible: false }));
+        }
+    };
+
     // Clear lock when compound changes
     const handleCompoundChange = (e) => {
         setSelectedCompoundIndex(Number(e.target.value));
@@ -277,28 +341,45 @@ export default function CompoundVsTarget() {
         console.log("heatmapData updated:", heatmapData);
     }, [heatmapData]);
 
-    // Calculate dynamic cell size based on screen size and number of hits
+    // Estimate the width of the longest target label
+    const targetLabelWidth = useMemo(() => {
+        if (!tableData) return 100;
+        const longestLabel = Math.max(...tableData.targets.map(t => t.split(':')[0].length));
+        // Approximate character width at 12px font size
+        return longestLabel * 8 + 20; // 8px per char + padding/margin
+    }, [tableData]);
+
+    // Calculate dynamic cell size based on screen size, number of hits, and available height
     const cellSize = useMemo(() => {
         if (!tableData) return { width: 30, height: 25 };
-        
+
+        // Available width = half the window (for the heatmap side) minus target labels, gap, and padding
         let availableWidth;
         if (isMobile) {
-            availableWidth = windowWidth - 120; // Account for target labels and padding
+            availableWidth = windowWidth - targetLabelWidth - 40;
         } else if (isTablet) {
-            availableWidth = windowWidth * 0.5 - 100;
+            availableWidth = windowWidth * 0.5 - targetLabelWidth - 40;
         } else {
-            availableWidth = 650;
+            availableWidth = windowWidth * 0.5 - targetLabelWidth - 60;
         }
-        
+
         const calculatedWidth = Math.max(
-            isMobile ? 15 : 20, 
-            Math.min(isMobile ? 30 : 50, Math.floor(availableWidth / tableData.maxHits))
+            isMobile ? 10 : 12,
+            Math.floor(availableWidth / tableData.maxHits)
         );
-        return { 
-            width: calculatedWidth, 
-            height: Math.max(isMobile ? 20 : 25, calculatedWidth) 
+
+        // Calculate height to fit all rows within available vertical space
+        const availableHeight = windowHeight - (isMobile ? 250 : 350);
+        const calculatedHeight = Math.max(
+            isMobile ? 10 : 12,
+            Math.floor(availableHeight / tableData.targets.length)
+        );
+
+        return {
+            width: calculatedWidth,
+            height: calculatedHeight
         };
-    }, [tableData, isMobile, isTablet, windowWidth]);
+    }, [tableData, isMobile, isTablet, windowWidth, windowHeight, targetLabelWidth]);
 
     // Responsive molecule image sizes
     const moleculeSize = useMemo(() => {
@@ -316,11 +397,16 @@ export default function CompoundVsTarget() {
 
     return (
         <Layout>
-            <h1 className={`font-bold ${isMobile ? 'text-xl' : 'text-2xl'}`}>
+              <Link 
+                        to={`/result?taskId=${taskId}`}
+                        className=" hover:underline mb-4 inline-block"
+                    >
+                        ← Back to result
+                    </Link>
+            <h1 className={`font-bold ${isMobile ? 'text-xl' : 'text-2xl'} mb-2`} >
                 Compound vs Target Heatmap
             </h1>
-            <br />
-            <p className={isMobile ? 'text-sm' : ''}>Task ID: {taskId}</p>
+            <p className={`mb-2 ${isMobile ? 'text-sm' : ''}`}>Task ID: {taskId}</p>
             
             {/* Compound Selector Dropdown */}
             {allCompounds.length > 0 && (
@@ -360,7 +446,7 @@ export default function CompoundVsTarget() {
                     </select>
                     <span style={{ 
                         marginLeft: isMobile ? '0' : '15px', 
-                        color: '#666', 
+                        color: '#fff', 
                         fontSize: isMobile ? '12px' : '13px' 
                     }}>
                         {allCompounds.length} compound{allCompounds.length !== 1 ? 's' : ''} available
@@ -369,9 +455,10 @@ export default function CompoundVsTarget() {
             )}
 
             {heatmapData && (
-                <p style={{ 
+                <p style={{
                     fontSize: isMobile ? '12px' : '14px',
-                    wordBreak: 'break-all'
+                    wordBreak: 'break-all',
+                    marginBottom: '8px'
                 }}>
                     <strong>Compound:</strong> {heatmapData.Name}
                     {!isMobile && <> | <strong>SMILES:</strong> {heatmapData.SMILES}</>}
@@ -392,46 +479,52 @@ export default function CompoundVsTarget() {
                 width: '100%'
             }}>
                 {/* Heatmap table */}
-                <div style={{ 
-                    flex: isDesktop ? '1 1 50%' : '1 1 100%', 
-                    minWidth: 0, 
-                    overflow: 'auto',
+                <div style={{
+                    flexShrink: 0,
+                    minWidth: 0,
                     maxWidth: '100%'
                 }}>
                     {tableData && (
-                        <div style={{ 
-                            display: 'flex',
-                            overflowX: 'auto',
-                            maxWidth: '100%'
+                        <div style={{
+                            display: 'flex'
                         }}>
-                            <table style={{ 
-                                borderCollapse: 'collapse', 
-                                fontSize: isMobile ? '10px' : '11px'
-                            }}>
+                            <table
+                                ref={heatmapRef}
+                                tabIndex={0}
+                                onKeyDown={handleKeyDown}
+                                style={{
+                                    borderCollapse: 'collapse',
+                                    fontSize: isMobile ? '10px' : '11px',
+                                    outline: 'none'
+                                }}
+                            >
                                 <tbody>
-                                    {tableData.targets.map(target => (
+                                    {tableData.targets.map((target, rowIndex) => (
                                         <tr key={target}>
-                                            {Array.from({ length: tableData.maxHits }).map((_, index) => {
-                                                const hit = tableData.hitsPerTarget[target][index];
-                                                const isLocked = lockedTooltip && 
-                                                    lockedTooltip.hitId === hit?.id && 
+                                            {Array.from({ length: tableData.maxHits }).map((_, colIndex) => {
+                                                const hit = tableData.hitsPerTarget[target][colIndex];
+                                                const isLocked = lockedTooltip &&
+                                                    lockedTooltip.hitId === hit?.id &&
                                                     lockedTooltip.target === target;
+                                                const isFocused = focusedCell.row === rowIndex && focusedCell.col === colIndex;
                                                 return (
-                                                    <td 
-                                                        key={index}
+                                                    <td
+                                                        key={colIndex}
                                                         onMouseEnter={isDesktop ? (e) => handleMouseEnter(e, target, hit) : undefined}
                                                         onMouseLeave={isDesktop ? handleMouseLeave : undefined}
                                                         onClick={(e) => handleCellClick(e, target, hit)}
-                                                        style={{ 
+                                                        style={{
                                                             backgroundColor: getColorForScore(hit?.score, hit, target),
                                                             minWidth: `${cellSize.width}px`,
                                                             width: `${cellSize.width}px`,
                                                             height: `${cellSize.height}px`,
                                                             padding: 0,
                                                             cursor: hit ? 'pointer' : 'default',
-                                                            border: isLocked 
-                                                                ? '2px solid #007bff' 
-                                                                : '1px solid #eee',
+                                                            border: isFocused
+                                                                ? '2px solid #ff6600'
+                                                                : isLocked
+                                                                    ? '2px solid #007bff'
+                                                                    : '1px solid #eee',
                                                             boxSizing: 'border-box'
                                                         }}
                                                     />
@@ -447,14 +540,11 @@ export default function CompoundVsTarget() {
                                 flexShrink: 0 
                             }}>
                                 {tableData.targets.map(target => (
-                                    <div key={target} style={{ 
-                                        height: `${cellSize.height}px`, 
-                                        lineHeight: `${cellSize.height}px`, 
+                                    <div key={target} style={{
+                                        height: `${cellSize.height}px`,
+                                        lineHeight: `${cellSize.height}px`,
                                         whiteSpace: 'nowrap',
-                                        borderBottom: '1px solid transparent',
-                                        maxWidth: isMobile ? '80px' : 'none',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis'
+                                        borderBottom: '1px solid transparent'
                                     }}>
                                         {target.split(':')[0]}
                                     </div>
@@ -465,107 +555,116 @@ export default function CompoundVsTarget() {
                 </div>
 
                 {/* Tooltip with Molecule Images */}
-                <div style={{ 
-                    flex: isDesktop ? '1 1 50%' : '1 1 100%', 
+                <div style={{
+                    flex: '1 1 0%',
                     minWidth: 0,
                     minHeight: isMobile ? '250px' : '300px',
-                    width: '100%'
+                    width: '100%',
+                    position: 'sticky',
+                    top: '20px',
+                    alignSelf: 'flex-start'
                 }}>
-                    {showTooltip && rdkitReady ? (
-                        <div style={{
-                            backgroundColor: 'white',
-                            border: lockedTooltip ? '2px solid #007bff' : '1px solid #ccc',
-                            color: '#333',
-                            borderRadius: '8px',
-                            padding: isMobile ? '15px' : '20px',
-                            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                            width: '100%'
-                        }}>
-                            {/* Locked indicator */}
-                            {lockedTooltip && (
-                                <div style={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    marginBottom: '10px',
-                                    paddingBottom: '10px',
-                                    borderBottom: '1px solid #eee'
+                    <div style={{
+                        backgroundColor: 'white',
+                        border: lockedTooltip ? '2px solid #007bff' : '1px solid #e0e0e0',
+                        color: '#333',
+                        borderRadius: '8px',
+                        padding: isMobile ? '15px' : '20px',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                        width: '100%'
+                    }}>
+                        {/* Locked indicator */}
+                        {lockedTooltip && (
+                            <div style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                marginBottom: '10px',
+                                paddingBottom: '10px',
+                                borderBottom: '1px solid #eee'
+                            }}>
+                                <span style={{
+                                    fontSize: '12px',
+                                    color: '#007bff',
+                                    fontWeight: 'bold'
                                 }}>
-                                    <span style={{ 
-                                        fontSize: '12px', 
-                                        color: '#007bff',
-                                        fontWeight: 'bold'
-                                    }}>
-                                        📌 Click the same cell or "Unlock" to release
-                                    </span>
-                                    <button
-                                        onClick={() => {
-                                            setLockedTooltip(null);
-                                            setTooltip(prev => ({ ...prev, visible: false }));
-                                        }}
-                                        style={{
-                                            padding: '4px 10px',
-                                            backgroundColor: '#f8f9fa',
-                                            border: '1px solid #ccc',
-                                            borderRadius: '4px',
-                                            cursor: 'pointer',
-                                            fontSize: '12px'
-                                        }}
-                                    >
-                                        Unlock
-                                    </button>
-                                </div>
-                            )}
-                            
-                            <div style={{ 
+                                    Click the same cell or "Unlock" to release
+                                </span>
+                                <button
+                                    onClick={() => {
+                                        setLockedTooltip(null);
+                                        setTooltip(prev => ({ ...prev, visible: false }));
+                                    }}
+                                    style={{
+                                        padding: '4px 10px',
+                                        backgroundColor: '#f8f9fa',
+                                        border: '1px solid #ccc',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        fontSize: '12px'
+                                    }}
+                                >
+                                    Unlock
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Target details - shown on hover/click */}
+                        {showTooltip && rdkitReady && (
+                            <div style={{
                                 marginBottom: '15px',
-                                fontSize: isMobile ? '13px' : '14px'
+                                fontSize: isMobile ? '13px' : '14px',
+                                paddingBottom: '15px',
+                                borderBottom: '1px solid #eee'
                             }}>
                                 <strong>Target ChEMBL ID:</strong> {displayTooltip.target.split(':')[0]}<br />
-                                <strong>Target Name:</strong> {displayTooltip.target.split(':')[1]}<br /> 
+                                <strong>Target Name:</strong> {displayTooltip.target.split(':')[1]}<br />
                                 <strong>Known Hit ID:</strong> {displayTooltip.hitId}<br />
                                 <strong>Tanimoto Score:</strong> {displayTooltip.score.toFixed(4)}
                             </div>
-                            
-                            <div style={{ 
-                                display: 'flex', 
-                                flexDirection: isMobile ? 'column' : 'row',
-                                gap: isMobile ? '15px' : '20px', 
-                                justifyContent: 'center',
-                                alignItems: 'center'
-                            }}>
-                                {/* Query Compound */}
-                                <div style={{ 
-                                    flex: 1, 
-                                    textAlign: 'center', 
+                        )}
+
+                        {/* Molecules side by side */}
+                        <div style={{
+                            display: 'flex',
+                            flexDirection: isMobile ? 'column' : 'row',
+                            gap: isMobile ? '15px' : '20px',
+                            justifyContent: 'center',
+                            alignItems: 'flex-start'
+                        }}>
+                            {/* Query Compound - always visible */}
+                            {heatmapData && rdkitReady && (
+                                <div style={{
+                                    flex: 1,
+                                    textAlign: 'center',
                                     maxWidth: isMobile ? '100%' : '250px',
                                     width: '100%'
                                 }}>
-                                    <div style={{ 
-                                        fontWeight: 'bold', 
-                                        marginBottom: '8px', 
-                                        fontSize: isMobile ? '12px' : '13px' 
+                                    <div style={{
+                                        fontWeight: 'bold',
+                                        marginBottom: '8px',
+                                        fontSize: isMobile ? '12px' : '13px'
                                     }}>
                                         Query Compound
                                     </div>
-                                    <div style={{ 
-                                        fontSize: isMobile ? '10px' : '11px', 
-                                        color: '#666', 
-                                        marginBottom: '8px' 
+                                    <div style={{
+                                        fontSize: isMobile ? '10px' : '11px',
+                                        color: '#666',
+                                        marginBottom: '8px'
                                     }}>
                                         {heatmapData.Name}
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'center' }}>
-                                        <MoleculeSVG 
-                                            smiles={heatmapData.SMILES} 
-                                            width={moleculeSize.width} 
-                                            height={moleculeSize.height} 
+                                        <MoleculeSVG
+                                            smiles={heatmapData.SMILES}
+                                            width={moleculeSize.width}
+                                            height={moleculeSize.height}
                                         />
                                     </div>
-                                    <div style={{ 
-                                        fontSize: isMobile ? '9px' : '10px', 
-                                        color: '#888', 
-                                        marginTop: '8px', 
+                                    <div style={{
+                                        fontSize: isMobile ? '9px' : '10px',
+                                        color: '#888',
+                                        marginTop: '8px',
                                         wordBreak: 'break-all',
                                         maxHeight: isMobile ? '40px' : 'none',
                                         overflow: 'hidden'
@@ -573,39 +672,41 @@ export default function CompoundVsTarget() {
                                         {heatmapData.SMILES}
                                     </div>
                                 </div>
+                            )}
 
-                                {/* Known Hit */}
-                                <div style={{ 
-                                    flex: 1, 
-                                    textAlign: 'center', 
+                            {/* Known Hit - shown on hover/click */}
+                            {showTooltip && rdkitReady ? (
+                                <div style={{
+                                    flex: 1,
+                                    textAlign: 'center',
                                     maxWidth: isMobile ? '100%' : '250px',
                                     width: '100%'
                                 }}>
-                                    <div style={{ 
-                                        fontWeight: 'bold', 
-                                        marginBottom: '8px', 
-                                        fontSize: isMobile ? '12px' : '13px' 
+                                    <div style={{
+                                        fontWeight: 'bold',
+                                        marginBottom: '8px',
+                                        fontSize: isMobile ? '12px' : '13px'
                                     }}>
                                         Known Hit
                                     </div>
-                                    <div style={{ 
-                                        fontSize: isMobile ? '10px' : '11px', 
-                                        color: '#666', 
-                                        marginBottom: '8px' 
+                                    <div style={{
+                                        fontSize: isMobile ? '10px' : '11px',
+                                        color: '#666',
+                                        marginBottom: '8px'
                                     }}>
                                         {displayTooltip.hitId}
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'center' }}>
-                                        <MoleculeSVG 
-                                            smiles={displayTooltip.hitSmiles} 
-                                            width={moleculeSize.width} 
-                                            height={moleculeSize.height} 
+                                        <MoleculeSVG
+                                            smiles={displayTooltip.hitSmiles}
+                                            width={moleculeSize.width}
+                                            height={moleculeSize.height}
                                         />
                                     </div>
-                                    <div style={{ 
-                                        fontSize: isMobile ? '9px' : '10px', 
-                                        color: '#888', 
-                                        marginTop: '8px', 
+                                    <div style={{
+                                        fontSize: isMobile ? '9px' : '10px',
+                                        color: '#888',
+                                        marginTop: '8px',
                                         wordBreak: 'break-all',
                                         maxHeight: isMobile ? '40px' : 'none',
                                         overflow: 'hidden'
@@ -613,27 +714,24 @@ export default function CompoundVsTarget() {
                                         {displayTooltip.hitSmiles}
                                     </div>
                                 </div>
-                            </div>
+                            ) : (
+                                <div style={{
+                                    flex: 1,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: '#999',
+                                    fontSize: isMobile ? '13px' : '14px',
+                                    minHeight: isMobile ? '100px' : '180px'
+                                }}>
+                                    {isDesktop
+                                        ? 'Hover to preview, click to pin. Use arrow keys to navigate, Enter/Space to pin.'
+                                        : 'Tap a cell to see hit details'
+                                    }
+                                </div>
+                            )}
                         </div>
-                    ) : (
-                        <div style={{
-                            backgroundColor: '#f9f9f9',
-                            border: '1px dashed #ccc',
-                            borderRadius: '8px',
-                            padding: '20px',
-                            minHeight: isMobile ? '100px' : '200px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: '#999',
-                            fontSize: isMobile ? '13px' : '14px'
-                        }}>
-                            {isDesktop 
-                                ? 'Hover to preview, click to pin molecule details'
-                                : 'Tap on a cell to see molecule details'
-                            }
-                        </div>
-                    )}
+                    </div>
                 </div>
             </div>
         </Layout>

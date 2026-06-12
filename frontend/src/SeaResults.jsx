@@ -7,6 +7,9 @@ export default function Result() {
     const [searchParams] = useSearchParams();
     const taskId = searchParams.get('taskId') || '';
     const targetChemblId = searchParams.get('targetChemblId') || '';
+    const [targetName, setTargetName] = useState('');
+    const [Uniprot_ID, setUniprot_ID] = useState('');
+    const [species, setSpecies] = useState('');
     const [percent1Done, setPercent1Done] = useState(0);
     const [result, setResult] = useState([]);
     const [queryCompounds, setQueryCompounds] = useState([]);
@@ -15,6 +18,7 @@ export default function Result() {
     const [seaData, setSeaData] = useState(null);
     const [hoveredCell, setHoveredCell] = useState(null);
     const [sortBy, setSortBy] = useState('score');
+    const [sortDirection, setSortDirection] = useState('desc');
     const [activeButton, setActiveButton] = useState(false);
     const [taskStatus, setTaskStatus] = useState(null);
     const [errorMessage, setErrorMessage] = useState(null);
@@ -37,7 +41,11 @@ export default function Result() {
                 return null;
             }
 
-            const svg = mol.get_svg(width, height);
+            const svg = mol.get_svg_with_highlights(JSON.stringify({
+                width,
+                height,
+                backgroundColour: [0, 0, 0, 0]
+            }));
             mol.delete();
             
             setMoleculeImages(prev => ({
@@ -55,7 +63,7 @@ export default function Result() {
         if (heatmapData && rdkitReady && window.RDKit) {
             heatmapData.forEach((item) => {
                 if (!moleculeImages[item.Known_Hit_ID]) {
-                    generateMoleculeSVG(item.Known_Hit_SMILES, item.Known_Hit_ID);
+                    generateMoleculeSVG(item.Known_Hit_SMILES, item.Known_Hit_ID, 300, 300);
                 }
             });
         }
@@ -65,11 +73,17 @@ export default function Result() {
         try {
             const response = await fetch(`/api/result?taskId=${taskId}`);
             const data = await response.json();
-            
+
             setTaskStatus(data.status);
             if (data.status === 'SUCCESS'){
                 setPercent1Done(100);
                 setResult(data.result);
+                // Cache result in sessionStorage for quick access on revisit
+                try {
+                    sessionStorage.setItem(`sea_result`, JSON.stringify(data.result));
+                } catch (e) {
+                    console.warn('Failed to cache result in sessionStorage:', e);
+                }
                 console.log('Task completed:', data);
             }
             else if (data.status === 'ERROR') {
@@ -92,6 +106,7 @@ export default function Result() {
             const response = await fetch(`/api/best_similarity?taskId=${taskId}&target_chembl_id=${targetChemblId}`);
             const data = await response.json();
             console.log('Target heat map data:', data);
+            if (data.target_name) setTargetName(data.target_name);
             setSeaData(data.best_similarity);
             setHeatmapData(data.best_similarity);
             setQueryCompounds(data.query_compounds);
@@ -119,17 +134,30 @@ export default function Result() {
 
 
 
+    function handleSort(column) {
+        if (sortBy === column) {
+            setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+        } else {
+            setSortBy(column);
+            setSortDirection(column === 'score' ? 'desc' : 'asc');
+        }
+    }
+
     // Memoized sorted data
     const sortedData = useMemo(() => {
         if (!heatmapData|| heatmapData.length === 0) return [];
         const sorted = [...heatmapData];
         if (sortBy === 'score') {
-            sorted.sort((a, b) => b.Tanimoto_Score - a.Tanimoto_Score);
+            sorted.sort((a, b) => sortDirection === 'desc'
+                ? b.Tanimoto_Score - a.Tanimoto_Score
+                : a.Tanimoto_Score - b.Tanimoto_Score);
         } else {
-            sorted.sort((a, b) => a.Known_Hit_ID.localeCompare(b.Known_Hit_ID));
+            sorted.sort((a, b) => sortDirection === 'asc'
+                ? a.Known_Hit_ID.localeCompare(b.Known_Hit_ID)
+                : b.Known_Hit_ID.localeCompare(a.Known_Hit_ID));
         }
         return sorted;
-    }, [heatmapData, sortBy]);
+    }, [heatmapData, sortBy, sortDirection]);
 
     // Memoized statistics
     const stats = useMemo(() => {
@@ -154,7 +182,22 @@ export default function Result() {
     const getTextColor = (score) => {
         return score >= 0.5 ? 'white' : '#1f2937';
     };
-    // Check task status every 5 seconds, stop when done
+    // On mount: load cached result immediately, then fetch fresh data to refresh cache
+    useEffect(() => {
+        try {
+            const cached = sessionStorage.getItem(`sea_result`);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                setResult(parsed);
+                setTaskStatus('SUCCESS');
+                setPercent1Done(100);
+            }
+        } catch (e) {
+            console.warn('Failed to load cached result:', e);
+        }
+    }, [taskId]);
+
+    // Poll task status every 3 seconds, stop when done
     useEffect(() => {
         if (taskStatus === 'SUCCESS' || taskStatus === 'ERROR') return;
         checkTaskStatus();
@@ -195,6 +238,21 @@ export default function Result() {
     useEffect(() => {
         if (targetChemblId) {
             fetchTargetHeatMap(targetChemblId, taskId);
+            // Look up target info from cached sea_result
+            try {
+                const cached = sessionStorage.getItem(`sea_result`);
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    const match = parsed.find(r => r.Target_Chembl_ID === targetChemblId);
+                    if (match) {
+                        setTargetName(match.Target_Name || '');
+                        setUniprot_ID(match.Uniprot_ID || '');
+                        setSpecies(match.Target_Species || '');
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to look up target name from cache:', e);
+            }
         }
     }, [targetChemblId, taskId]);
 
@@ -223,30 +281,32 @@ export default function Result() {
         // Display all data or data for selected query compound
         return (
             <Layout>
-            <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
+            {/* <div className="min-h-screen bg-gray-100 p-4 sm:p-8 rounded-lg"> */}
+            
                 <div className="max-w-7xl mx-auto">
                     <Link 
                         to={`/result?taskId=${taskId}`}
-                        className="text-blue-600 hover:underline mb-4 inline-block"
+                        className=" hover:underline mb-4 inline-block"
                     >
-                        ← Back to all results
+                        ← Back to result
                     </Link>
+                    
 
                     <div className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mt-4">
                      
-                        <div className="flex flex-col md:flex-row md:justify-between md:items-center mb-4 gap-4">
+                        <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-4 gap-4">
                             <div>
                                 <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Tanimoto Similarity Results</h2>
-                                <div className="flex flex-col md:flex-row md:items-center mb-6 gap-4">
+                                <div className="flex flex-col md:flex-row md:items-center mb-6">
                                     <p className="text-sm text-gray-600 mr-4">Query Compound:</p>
                                     <select
-                                        className="px-3 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
+                                        className="px-3 py-4 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
                                         onChange={(e) => {
                                         const selectedCompound = e.target.value;
                                         if (selectedCompound === "all") {
-                                            handleHeatMapDisplay(null); // Display all compounds
+                                            handleHeatMapDisplay(null);
                                         } else {
-                                            handleHeatMapDisplay(selectedCompound); // Display selected compound
+                                            handleHeatMapDisplay(selectedCompound);
                                         }
                                         }}
                                     >
@@ -257,31 +317,46 @@ export default function Result() {
                                         </option>
                                         ))}
                                     </select>
-                                
-                                    </div>
-                                <p className="text-sm text-gray-600">Target: {targetChemblId}</p>
+                                </div>
                             </div>
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => setSortBy('score')}
-                                    className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
-                                        sortBy === 'score' 
-                                            ? 'bg-blue-600 text-white' 
-                                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                    }`}
-                                >
-                                    Sort by Score
-                                </button>
-                                <button
-                                    onClick={() => setSortBy('id')}
-                                    className={`px-4 py-2 rounded text-sm font-medium transition-colors ${
-                                        sortBy === 'id' 
-                                            ? 'bg-blue-600 text-white' 
-                                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                    }`}
-                                >
-                                    Sort by ID
-                                </button>
+                            <div className=" rounded-lg p-4 text-xl text-gray-700 space-y-1 =">
+                                <p><span className="font-semibold">Target ChEMBL ID:</span> {targetChemblId}</p>
+                                <p><span className="font-semibold">Target Name:</span> {targetName}</p>
+                                <p><span className="font-semibold">Uniprot ID:</span> {Uniprot_ID}</p>
+                                <p><span className="font-semibold">Species:</span> {species}</p>
+                            </div>
+                        </div>
+                        <div className="mt-6 p-4 bg-gray-50 rounded">
+                            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                                <div>
+                                    <h3 className="text-sm font-semibold text-gray-700 mb-2">Similarity Scale</h3>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-gray-600">Low</span>
+                                        <div className="flex">
+                                            {[0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0].map((val) => (
+                                                <div
+                                                    key={val}
+                                                    className="w-8 h-6 sm:w-12 sm:h-8 border border-gray-300 flex items-center justify-center text-[10px] sm:text-xs font-semibold"
+                                                    style={{ 
+                                                        backgroundColor: getColor(val),
+                                                        color: getTextColor(val)
+                                                    }}
+                                                    title={val.toFixed(1)}
+                                                >
+                                                    {val.toFixed(1)}
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <span className="text-xs text-gray-600">High</span>
+                                    </div>
+                                </div>
+                                {stats && (
+                                    <div className="text-sm text-gray-600 space-y-1">
+                                        <div><strong>Total Compounds:</strong> {heatmapData.length}</div>
+                                        <div><strong>Score Range:</strong> {stats.min.toFixed(4)} - {stats.max.toFixed(4)}</div>
+                                        <div><strong>Average Score:</strong> {stats.avg.toFixed(4)}</div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                         
@@ -289,16 +364,22 @@ export default function Result() {
                             <table className="w-full border-collapse">
                                 <thead>
                                     <tr>
-                                        <th className="p-3 text-left text-sm font-semibold text-gray-700 bg-gray-100 sticky left-0 z-10">
-                                            Known Hit ID
+                                        <th
+                                            className="p-3 text-left text-sm font-semibold text-gray-700 bg-gray-100 sticky left-0 z-10 cursor-pointer select-none hover:bg-gray-200 transition-colors"
+                                            onClick={() => handleSort('id')}
+                                        >
+                                            Known Hit ID <span style={{ opacity: sortBy === 'id' ? 1 : 0.3 }}>{sortBy === 'id' ? (sortDirection === 'asc' ? '▲' : '▼') : '▲'}</span>
                                         </th>
-                                        <th className="p-3 text-center text-sm font-semibold text-gray-700 bg-gray-100">
-                                            Tanimoto Score
+                                        <th
+                                            className="p-3 text-center text-sm font-semibold text-gray-700 bg-gray-100 cursor-pointer select-none hover:bg-gray-200 transition-colors"
+                                            onClick={() => handleSort('score')}
+                                        >
+                                            Tanimoto Score <span style={{ opacity: sortBy === 'score' ? 1 : 0.3 }}>{sortBy === 'score' ? (sortDirection === 'asc' ? '▲' : '▼') : '▼'}</span>
                                         </th>
                                         <th className="p-3 text-left text-sm font-semibold text-gray-700 bg-gray-100">
                                             SMILES
                                         </th>
-                                        <th className="p-3 text-left text-sm font-semibold text-gray-700 bg-gray-100">
+                                        <th className="p-3 text-center text-sm font-semibold text-gray-700 bg-gray-100">
                                             Image
                                         </th>
                                     </tr>
@@ -309,7 +390,7 @@ export default function Result() {
                                             key={index}
                                             className="border-b hover:bg-gray-50 transition-colors"
                                         >
-                                            <td className="p-3 text-sm font-medium text-gray-900 sticky left-0 bg-white">
+                                            <td className="p-3 text-md font-medium text-gray-900 sticky left-0 bg-white">
                                                 {item.Known_Hit_ID}
                                             </td>
                                             <td 
@@ -318,7 +399,7 @@ export default function Result() {
                                                 onMouseLeave={() => setHoveredCell(null)}
                                             >
                                                 <div
-                                                    className="h-16 flex items-center justify-center text-sm font-bold cursor-pointer transition-transform hover:scale-105"
+                                                    className="h-16 flex items-center justify-center text-md font-bold cursor-pointer transition-transform hover:scale-105"
                                                     style={{
                                                         backgroundColor: getColor(item.Tanimoto_Score),
                                                         color: getTextColor(item.Tanimoto_Score)
@@ -334,13 +415,13 @@ export default function Result() {
                                                     </div>
                                                 )}
                                             </td>
-                                            <td className="p-3 text-xs text-gray-600 font-mono max-w-md truncate" title={item.Known_Hit_SMILES}>
+                                            <td className="p-3 text-md text-gray-600 font-mono max-w-[150px] break-all" title={item.Known_Hit_SMILES}>
                                                 {item.Known_Hit_SMILES}
                                             </td>
-                                            <td className="p-3">
+                                            <td className="p-3 text-center">
                                                 {moleculeImages[item.Known_Hit_ID] ? (
                                                     <div
-                                                        className="w-24 h-24 sm:w-36 sm:h-36 md:w-48 md:h-48"
+                                                        className="w-36 h-36 sm:w-48 sm:h-48 md:w-64 md:h-64 mx-auto"
                                                         dangerouslySetInnerHTML={{ __html: moleculeImages[item.Known_Hit_ID] }}
                                                     />
                                                 ) : (
@@ -388,7 +469,7 @@ export default function Result() {
                         </div>
                     </div>
                 </div>
-            </div>
+            {/* </div> */}
             </Layout>
         );
     }
@@ -396,8 +477,8 @@ export default function Result() {
     // Main results page
     return (
         <Layout>
-        <div className="flex-col items-center justify-center min-h-screen py-2 text-gray-700">
-            <div className="mt-5 px-4 py-4 sm:px-10 sm:py-5 bg-gray-50" >
+        <div className="flex-col items-center justify-center py-2 text-gray-700 ">
+            <div className="px-4 py-4 sm:px-10 sm:py-5 bg-gray-50 rounded-lg" >
                 <h1 className="text-2xl  font-bold mb-4">Result Page</h1>
                 <p className="mb-2">Your task ID is: {taskId}</p>
                 

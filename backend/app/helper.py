@@ -41,6 +41,7 @@ np.set_printoptions(suppress=True)
 ## Helper function
 ################################################################
 
+
 def validate_smiles(smiles):
 	'''validate smiles string'''
 	try:
@@ -885,3 +886,4 @@ if __name__ == "__main__" :
 
 	sea_result = sea_analysis_with_multiprocessing(testFile, list_chembl,
 		gev_c = gev_c, gev_loc = gev_loc, gev_scale = gev_scale)
+

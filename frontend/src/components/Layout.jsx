@@ -10,9 +10,9 @@ export const metadata = {
 
 export default function Layout({ children }) {
     return (
-      <div className="flex flex-col min-h-screen bg-[url('/src/assets/sea-bg.jpg')] bg-cover min-h-screen bg-slate-950 text-white overflow-hidden">
+      <div className="flex flex-col min-h-screen bg-[url('/src/assets/sea-bg.jpg')] bg-cover bg-slate-950 text-white overflow-x-hidden">
         <NavBar />
-            <main className="flex-grow container mx-auto px-4 py-10">
+            <main className="container mx-auto py-10 flex-grow">
               <div className="bg-white/10 p-6 rounded-lg shadow-lg backdrop-blur-md border border-white/20">
                 {children}
               </div>

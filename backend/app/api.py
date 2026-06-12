@@ -312,7 +312,6 @@ def compound_vs_target(request : Request):
 def get_best_similarity_per_target(request: Request):
     task_id = request.query_params.get("taskId").split('?')[0]
     target_chembl_id = request.query_params.get("target_chembl_id")
-    print("Target ChEMBL ID:", target_chembl_id)
     print("Fetching best similarity for target:", target_chembl_id)
     best_similarity_file = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output/top10_{target_chembl_id}.tsv"
     if not os.path.exists(best_similarity_file):
