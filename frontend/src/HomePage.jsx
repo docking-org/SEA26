@@ -331,7 +331,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
   return (
     <Layout>
         {bannerVisible && (
-          <div className="bg-teal-400 backdrop-blur-sm text-white px-4 py-3 text-center text-lg relative rounded-t-lg -mx-6 -mt-6 mb-6 border-b border-white/20">
+          <div className="bg-teal-400 backdrop-blur-sm text-teal-950 px-4 py-3 text-center text-lg relative rounded-t-lg -mx-6 -mt-6 mb-6 border-b border-white/20">
             <span>SEA has been updated to ChEMBL {import.meta.env.VITE_CHEMBL_VERSION} for improved prediction accuracy. The previous version remains available <a target="_blank" href="https://seadev.docking.org" className="underline hover:text-teal-200">here</a>.</span>
             <button
               onClick={() => setBannerVisible(false)}
@@ -409,7 +409,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
                       value={query}
                       onChange={handleQueryChange}
                       placeholder="Paste SMILES or try example below"
-                      className={`mt-2 py-2 px-3 w-full border backdrop-blur-2xl rounded-md text-teal-950 focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-100 ${
+                      className={`mt-2 py-2 px-3 w-full border backdrop-blur-2xl rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-100 ${
                         !isValid ? 'border-red-500 bg-red-50' : 'border-gray-300'
                       }`}
                     />
@@ -426,10 +426,13 @@ HDAC1 [O-]C(=O)CCC butyrate`}
 
             {!showAdvanced && (
               <div className="mt-3">
-                <p className="text-pretty text-teal-900 mb-2">Examples:</p>
-                <p className="text-pretty text-sm text-teal-950 sm:text-base break-all sm:break-normal">
+                <p className="text-teal-950 mb-2">Examples:</p>
+                <p className="text-pretty text-sm sm:text-base text-teal-950 break-all sm:break-norma bg-white/50 p-3 rounded-md">
+                  <pre>
                   CNCCC(c1ccccc1)Oc2ccc(cc2)C(F)(F)F fluoxetine<br/>
                   Cn1cnc2c1c(=O)n(c(=O)n2C)C caffeine
+                  </pre>
+                  
                 </p>
                 <button
                   type="button"

@@ -23,7 +23,7 @@ export default function RecentTasks() {
         <div className="px-2 sm:px-0">
             <h1 className="text-xl sm:text-2xl font-bold mb-4">Recent Tasks</h1>
                 <div className="overflow-x-auto">
-                    <table className="min-w-full bg-white border text-gray-950 border-white/20 rounded-lg">
+                    <table className="min-w-full bg-white text-gray-950 border-white/20 rounded-lg">
                         <thead>
                             <tr>
                                 <th className="py-2 px-2 sm:px-4 border-b border-gray-300 text-left text-sm sm:text-base">Task ID</th>
