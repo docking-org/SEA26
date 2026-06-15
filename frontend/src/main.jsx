@@ -9,6 +9,7 @@ import HomePage from "./HomePage";
 import Result from './SeaResults';
 import RecentTasks from './RecentTasks';
 import CompoundVsTarget from './CompoundVSTarget';
+import NotFound from './NotFound';
 
 
 // Initialize Google Analytics
@@ -32,6 +33,10 @@ const router = createBrowserRouter([
   {
     path:"/compoundVStarget",
     element : <CompoundVsTarget />,
+  },
+  {
+    path: "*",
+    element: <NotFound />,
   }
 
 ]);

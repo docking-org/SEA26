@@ -382,9 +382,12 @@ frontend_path = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
 from starlette.exceptions import HTTPException as StarletteHTTPException
 @app.exception_handler(StarletteHTTPException)
 async def spa_exception_handler(request: Request, exc: StarletteHTTPException):
-    # For 404 errors, serve index.html (let React Router handle it)
     if exc.status_code == 404:
-        return FileResponse(os.path.join(frontend_path, "index.html"))
+        # Return proper JSON 404 for API routes
+        if request.url.path.startswith("/api"):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        # For non-API routes, serve index.html (let React Router handle it)
+        return FileResponse(os.path.join(frontend_path, "index.html"), status_code=404)
     # For other HTTP errors, return a proper JSON response
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
