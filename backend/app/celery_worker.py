@@ -58,8 +58,9 @@ def release_job_slot(task_id):
 
 @worker_init.connect
 def on_worker_init(**kwargs):
-    """Warm the Redis target cache before the worker pool starts accepting tasks."""
-    warm_target_cache()
+    """Start cache warming in the background so the worker is not blocked on NFS."""
+    import threading
+    threading.Thread(target=warm_target_cache, daemon=True).start()
 
 def get_cached_target(target_file):
     """Get target DataFrame from Redis cache, or load from disk if not cached."""
