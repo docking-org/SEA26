@@ -82,6 +82,7 @@ services:
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
+      - PYTHONUNBUFFERED=1
     command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=30 --max-tasks-per-child=10
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
