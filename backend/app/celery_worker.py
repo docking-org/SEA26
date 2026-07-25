@@ -1,7 +1,8 @@
 from celery import Celery, current_task, shared_task, chord, current_app, group
 from celery.result import GroupResult
 from celery.schedules import crontab
-from celery.signals import worker_ready
+from celery.signals import worker_init
+import glob
 import time
 import asyncio
 import pandas as pd
@@ -55,10 +56,10 @@ def release_job_slot(task_id):
     r.srem("active:jobs", task_id)
 
 
-@worker_ready.connect
-def on_worker_ready(**kwargs):
-    """Warm the Redis target cache when the Celery worker starts."""
-    warm_target_cache.delay()
+@worker_init.connect
+def on_worker_init(**kwargs):
+    """Warm the Redis target cache before the worker pool starts accepting tasks."""
+    warm_target_cache()
 
 def get_cached_target(target_file):
     """Get target DataFrame from Redis cache, or load from disk if not cached."""
@@ -83,9 +84,10 @@ def get_cached_target(target_file):
 @celery.task(name="sea.warm_cache")
 def warm_target_cache():
     """Pre-populate Redis cache with all target files."""
-    import glob
-
     data_folder = os.getenv("SEA_DATA_FOLDER")
+    if not data_folder:
+        print("warm_target_cache: SEA_DATA_FOLDER not set, skipping")
+        return {"total_files": 0, "cached": 0, "errors": 0}
     print(f"Warming Redis cache from {data_folder}...")
 
     # Find all .tsv files
