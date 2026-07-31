@@ -80,7 +80,7 @@ export default function Result() {
                 setResult(data.result);
                 // Cache result in sessionStorage for quick access on revisit
                 try {
-                    sessionStorage.setItem(`sea_result`, JSON.stringify(data.result));
+                    sessionStorage.setItem(`sea_result_${taskId}`, JSON.stringify(data.result));
                 } catch (e) {
                     console.warn('Failed to cache result in sessionStorage:', e);
                 }
@@ -185,7 +185,7 @@ export default function Result() {
     // On mount: load cached result immediately, then fetch fresh data to refresh cache
     useEffect(() => {
         try {
-            const cached = sessionStorage.getItem(`sea_result`);
+            const cached = sessionStorage.getItem(`sea_result_${taskId}`);
             if (cached) {
                 const parsed = JSON.parse(cached);
                 setResult(parsed);
@@ -240,7 +240,7 @@ export default function Result() {
             fetchTargetHeatMap(targetChemblId, taskId);
             // Look up target info from cached sea_result
             try {
-                const cached = sessionStorage.getItem(`sea_result`);
+                const cached = sessionStorage.getItem(`sea_result_${taskId}`);
                 if (cached) {
                     const parsed = JSON.parse(cached);
                     const match = parsed.find(r => r.Target_Chembl_ID === targetChemblId);
