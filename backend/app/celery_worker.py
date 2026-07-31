@@ -5,6 +5,7 @@ from celery.signals import worker_init
 import glob
 import time
 import asyncio
+import traceback
 import pandas as pd
 import numpy as np
 import redis
@@ -227,6 +228,14 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
     return results
 
 
+def _write_log_(log_file, message):
+    """Append a timestamped line to a log file."""
+    from datetime import datetime
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    with open(log_file, "a") as f:
+        f.write(f"[{timestamp}] {message}\n")
+
+
 @celery.task(name="sea.postprocess_sea_job")
 def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
     """Chord callback: runs on a Celery worker after all sea_target_score tasks complete."""
@@ -247,12 +256,23 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
     job_dir = os.environ.get("SEA_JOB_DIR")
     data_folder = os.environ.get("SEA_DATA_FOLDER")
     save_folder = f"{job_dir}/{task_id}/sea_output"
+    log_dir = f"{job_dir}/{task_id}/logs"
 
     if not os.path.exists(save_folder):
         _mkdir_(save_folder)
+    if not os.path.exists(log_dir):
+        _mkdir_(log_dir)
+
+    phase1_log = f"{log_dir}/sea_results.log"
+    phase2_log = f"{log_dir}/similarity.log"
+    phase3_log = f"{log_dir}/heatmap.log"
+
+    _write_log_(phase1_log, f"Post-processing started for task {task_id}")
+    _write_log_(phase1_log, f"Total targets received: {len(group_results)}")
 
     # --- Phase 1: Aggregate SEA results ---
     try:
+        _write_log_(phase1_log, "Phase 1 started: aggregating SEA results")
         save_progress(task_id, {
             'progress': 100, 'status': 'RUNNING', 'error': None,
             'sea_calculated': False, 'best_similarity_calculated': False,
@@ -265,7 +285,10 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
             for (name, z, p), chembl_path in zip(group_results, list_chembl)
             if z is not None and p is not None
         ]
+        n_failed = len(group_results) - len(valid)
+        _write_log_(phase1_log, f"Scored targets: {len(valid)} valid, {n_failed} failed (z/p-value is None)")
         if not valid:
+            _write_log_(phase1_log, "Phase 1 FAILED: all target scores returned None")
             save_progress(task_id, {
                 'progress': 100, 'status': 'ERROR', 'error': 'All target scores failed',
                 'sea_calculated': False, 'best_similarity_calculated': False,
@@ -301,17 +324,23 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                 "uniprot_accession": "Uniprot_ID",
                 "sequence": "Sequence",
             })
+        else:
+            _write_log_(phase1_log, f"Warning: Uniprot lookup file not found at {lookup_file}")
 
         sea_result = sea_result.sort_values(by="p(P_value)", ignore_index=True)
+        n_before_filter = len(sea_result)
         sea_result = sea_result[sea_result["p(P_value)"] > 3]
+        _write_log_(phase1_log, f"Significant hits (p(P_value) > 3): {len(sea_result)} of {n_before_filter}")
         sea_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
 
+        _write_log_(phase1_log, "Phase 1 completed: sea_result.tsv written")
         save_progress(task_id, {
             'progress': 100, 'status': 'RUNNING', 'error': None,
             'sea_calculated': True, 'best_similarity_calculated': False,
             'heatmap_calculated': False, 'failed': False,
         })
     except Exception as e:
+        _write_log_(phase1_log, f"Phase 1 FAILED: {e}\n{traceback.format_exc()}")
         print(f"Error aggregating SEA results: {e}")
         save_progress(task_id, {
             'progress': 100, 'status': 'ERROR', 'error': str(e),
@@ -323,13 +352,17 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
     # --- Phase 2: Similarity scores for each hit target ---
     try:
+        n_hit_targets = sea_result.shape[0]
+        _write_log_(phase2_log, f"Phase 2 started: computing similarity scores for {n_hit_targets} hit targets")
         heatmap_data = []
         data_test, mol_test = get_smiles_property(smiles_test)
         # Pre-build lookup dict once (used in every target iteration)
         name_to_smiles = dict(zip(data_test["Name"], data_test["SMILES"]))
         test_names = data_test["Name"].tolist()
         n_test = len(test_names)
+        _write_log_(phase2_log, f"Query compounds: {n_test} ({', '.join(test_names)})")
 
+        phase2_errors = 0
         for idx in range(sea_result.shape[0]):
             try:
                 target_chembl_id = sea_result["Target_Chembl_ID"].iloc[idx]
@@ -394,16 +427,21 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                 similarity_matrix['Target_ChEMBL_ID'] = target_cid
                 similarity_matrix['Target_Name'] = target_nm
                 heatmap_data += similarity_matrix.to_dict(orient="records")
+                _write_log_(phase2_log, f"[{idx+1}/{n_hit_targets}] {target_cid} ({target_nm}): known={len(known_ids)}, max_tc={float(best_tc.max()):.4f}, high_sim_hits={len(best_similarity)}")
             except Exception as e:
+                phase2_errors += 1
+                _write_log_(phase2_log, f"[{idx+1}/{n_hit_targets}] Target error ({target_chembl_id}): {e}\n{traceback.format_exc()}")
                 print(f"Error calculating similarity for target {target_chembl_id}: {e}")
                 continue
 
+        _write_log_(phase2_log, f"Phase 2 completed: {n_hit_targets - phase2_errors}/{n_hit_targets} targets processed, {phase2_errors} errors")
         save_progress(task_id, {
             'progress': 100, 'status': 'RUNNING', 'error': None,
             'sea_calculated': True, 'best_similarity_calculated': True,
             'heatmap_calculated': False, 'failed': False,
         })
     except Exception as e:
+        _write_log_(phase2_log, f"Phase 2 FAILED: {e}\n{traceback.format_exc()}")
         print(f"Error in similarity calculation: {e}")
         save_progress(task_id, {
             'progress': 100, 'status': 'ERROR', 'error': str(e),
@@ -415,6 +453,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
     # --- Phase 3: Heatmap data ---
     try:
+        _write_log_(phase3_log, f"Phase 3 started: building heatmap from {len(heatmap_data)} similarity records")
         group_fields = {"Name", "SMILES"}
         grouped_dict = {}
         for item in heatmap_data:
@@ -442,6 +481,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         with open(heatmap_file, "w") as hm:
             json.dump(heatmap_result, hm, indent=4)
     except Exception as e:
+        _write_log_(phase3_log, f"Phase 3 FAILED: {e}\n{traceback.format_exc()}")
         print(f"Error generating heatmap: {e}")
         save_progress(task_id, {
             'progress': 100, 'status': 'FAILED',
@@ -452,6 +492,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         release_job_slot(task_id)
         raise
 
+    _write_log_(phase3_log, f"Phase 3 completed: {len(heatmap_result)} compounds written to .heatmap")
     save_progress(task_id, {
         'progress': 100, 'status': 'SUCCESS', 'error': None,
         'sea_calculated': True, 'best_similarity_calculated': True,
