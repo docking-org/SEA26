@@ -11,6 +11,7 @@ import numpy as np
 import redis
 import pickle
 from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress, get_progress
+from .scripts.generate_boltz_jobs import generate_jobs as _generate_boltz_jobs
 from dotenv import load_dotenv, find_dotenv
 import os
 
@@ -493,6 +494,30 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         raise
 
     _write_log_(phase3_log, f"Phase 3 completed: {len(heatmap_result)} compounds written to .heatmap")
+
+    # --- Phase 4: Generate Boltz-2 job folders ---
+    phase4_log = f"{log_dir}/boltz.log"
+    try:
+        _write_log_(phase4_log, "Phase 4 started: generating Boltz-2 job folders")
+        boltz_out = f"{job_dir}/{task_id}/boltz_jobs"
+        test_file = f"{job_dir}/{task_id}/input.smi"
+        result_dir = f"{job_dir}/{task_id}/sea_output"
+        lookup_file = os.path.join(os.getenv("SEA_DATA_FOLDER"), "uniprot_chembl_id.tsv")
+        manifest = _generate_boltz_jobs(
+            result_dir=result_dir,
+            testFile=test_file,
+            out_dir=boltz_out,
+            tc_min=0.0,
+            lookup_file=lookup_file,
+            predict_affinity=True,
+            log_file=phase4_log,
+        )
+        _write_log_(phase4_log, f"Phase 4 completed: {manifest.shape[0]} Boltz jobs written to {boltz_out}")
+    except RuntimeError as e:
+        _write_log_(phase4_log, f"Phase 4 skipped: {e}")
+    except Exception as e:
+        _write_log_(phase4_log, f"Phase 4 FAILED: {e}\n{traceback.format_exc()}")
+
     save_progress(task_id, {
         'progress': 100, 'status': 'SUCCESS', 'error': None,
         'sea_calculated': True, 'best_similarity_calculated': True,
