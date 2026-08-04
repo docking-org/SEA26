@@ -1,25 +1,24 @@
-variables:
-  CI_PROJECT_NAME: sea25
 deploy production:
   only:
     - main
   stage: deploy
   tags:
     - sea25
+  variables:
+    CI_PROJECT_NAME: sea25
   script:
     - docker compose -f compose.prod.yml build --build-arg GIT_TOKEN="${GIT_TOKEN}" --build-arg VITE_CHEMBL_VERSION="${VITE_CHEMBL_VERSION}"
     - docker compose -f compose.prod.yml down || true
     - docker compose -f compose.prod.yml up -d
 
-
-variables:
-  CI_PROJECT_NAME: sea25-dev
 deploy development:
   only:
     - development
   stage: deploy
   tags:
     - sea25-dev
+  variables:
+    CI_PROJECT_NAME: sea25-dev
   script:
     - docker compose -f compose.dev.yml build --build-arg GIT_TOKEN="${GIT_TOKEN}" --build-arg VITE_CHEMBL_VERSION="${VITE_CHEMBL_VERSION}"
     - docker compose -f compose.dev.yml down || true

@@ -95,6 +95,11 @@ export default function CompoundVsTarget() {
     });
     const [lockedTooltip, setLockedTooltip] = useState(null); // NEW: locked/pinned state
     const [focusedCell, setFocusedCell] = useState({ row: -1, col: -1 });
+    const [boltzStatus, setBoltzStatus] = useState(null); // null | 'loading' | 'success' | 'error'
+    const [boltzMessage, setBoltzMessage] = useState('');
+    const [boltzJobsByChembl, setBoltzJobsByChembl] = useState({}); // chemblId -> [job names]
+    const [slurmJobs, setSlurmJobs] = useState({}); // chemblId -> { slurm_job_id, status }
+    const [slurmSubmitting, setSlurmSubmitting] = useState({}); // chemblId -> bool
     const heatmapRef = useRef(null);
     const { width: windowWidth, height: windowHeight } = useWindowSize();
     
@@ -331,11 +336,92 @@ export default function CompoundVsTarget() {
         setTooltip(prev => ({ ...prev, visible: false }));
     };
 
+    async function submitBoltz() {
+        setBoltzStatus('loading');
+        setBoltzMessage('');
+        try {
+            const resp = await fetch('/api/generate_boltz_jobs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task_id: taskId }),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                setBoltzStatus('success');
+                setBoltzMessage(`${data.n_jobs} Boltz job${data.n_jobs !== 1 ? 's' : ''} generated`);
+                fetchBoltzStatus();
+            } else {
+                setBoltzStatus('error');
+                setBoltzMessage(data.detail || 'Failed to generate Boltz jobs');
+            }
+        } catch (err) {
+            setBoltzStatus('error');
+            setBoltzMessage(err.message);
+        }
+    }
+
+    function fetchBoltzStatus() {
+        fetch(`/api/boltz_status?task_id=${taskId}`)
+            .then(r => r.json())
+            .then(data => setBoltzJobsByChembl(data.jobs_by_chembl || {}))
+            .catch(() => {});
+    }
+
+    function fetchSlurmStatus() {
+        fetch(`/api/boltz_slurm_status?task_id=${taskId}`)
+            .then(r => r.json())
+            .then(data => setSlurmJobs(data || {}))
+            .catch(() => {});
+    }
+
+    async function submitSlurmJob(chemblId) {
+        const ligand = heatmapData?.Name;
+        const jobKey = ligand ? `${chemblId}__${ligand}` : chemblId;
+        setSlurmSubmitting(prev => ({ ...prev, [jobKey]: true }));
+        try {
+            const resp = await fetch('/api/boltz_submit_slurm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task_id: taskId, chembl_id: chemblId, ligand }),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                setSlurmJobs(prev => ({
+                    ...prev,
+                    [jobKey]: { slurm_job_id: data.slurm_job_id, chembl_id: chemblId, ligand, status: 'pending' },
+                }));
+            } else {
+                alert(`SLURM submission failed: ${data.detail || 'unknown error'}`);
+            }
+        } catch (err) {
+            alert(`SLURM submission error: ${err.message}`);
+        } finally {
+            setSlurmSubmitting(prev => ({ ...prev, [jobKey]: false }));
+        }
+    }
+
     useEffect(() => {
         if (taskId) {
             fetchHeatMapData();
+            fetchBoltzStatus();
+            fetchSlurmStatus();
         }
     }, [taskId]);
+
+    // Poll SLURM status every 30 s while any job is active
+    useEffect(() => {
+        const hasActive = Object.values(slurmJobs).some(
+            j => j.status === 'pending' || j.status === 'running'
+        );
+        if (!hasActive) return;
+        const id = setInterval(() => {
+            fetch(`/api/boltz_slurm_status?task_id=${taskId}`)
+                .then(r => r.json())
+                .then(data => setSlurmJobs(data || {}))
+                .catch(() => {});
+        }, 30000);
+        return () => clearInterval(id);
+    }, [slurmJobs, taskId]);
 
     useEffect(() => {
         console.log("heatmapData updated:", heatmapData);
@@ -464,6 +550,23 @@ export default function CompoundVsTarget() {
                     {!isMobile && <> | <strong>SMILES:</strong> {heatmapData.SMILES}</>}
                 </p>
             )}
+            {/* Generate Boltz Jobs button */}
+            <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <button
+                    onClick={submitBoltz}
+                    disabled={boltzStatus === 'loading'}
+                    className="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+                >
+                    {boltzStatus === 'loading' ? 'Generating...' : 'Generate Boltz Jobs'}
+                </button>
+                {boltzStatus === 'success' && (
+                    <span style={{ color: '#16a34a', fontSize: '13px' }}>{boltzMessage}</span>
+                )}
+                {boltzStatus === 'error' && (
+                    <span style={{ color: '#dc2626', fontSize: '13px' }}>{boltzMessage}</span>
+                )}
+            </div>
+
             {loading && <p>Loading...</p>}
             {error && <p style={{ color: 'red' }}>{error}</p>}
             {!rdkitReady && <p style={{ color: '#666' }}>Loading RDKit...</p>}
@@ -534,21 +637,110 @@ export default function CompoundVsTarget() {
                                     ))}
                                 </tbody>
                             </table>
-                            <div style={{ 
-                                marginLeft: '10px', 
-                                fontSize: isMobile ? '10px' : '12px', 
-                                flexShrink: 0 
+                            <div style={{
+                                marginLeft: '10px',
+                                fontSize: isMobile ? '10px' : '12px',
+                                flexShrink: 0
                             }}>
-                                {tableData.targets.map(target => (
-                                    <div key={target} style={{
-                                        height: `${cellSize.height}px`,
-                                        lineHeight: `${cellSize.height}px`,
-                                        whiteSpace: 'nowrap',
-                                        borderBottom: '1px solid transparent'
-                                    }}>
-                                        {target.split(':')[0]}
-                                    </div>
-                                ))}
+                                {tableData.targets.map(target => {
+                                    const chemblId = target.split(':')[0];
+                                    const jobs = boltzJobsByChembl[chemblId];
+                                    const ligandName = heatmapData?.Name;
+                                    const hasBoltz = jobs && (
+                                        ligandName
+                                            ? jobs.some(j => j === `${chemblId}__${ligandName}`)
+                                            : jobs.length > 0
+                                    );
+                                    const jobKey = ligandName ? `${chemblId}__${ligandName}` : chemblId;
+                                    const slurmInfo = slurmJobs[jobKey] ?? slurmJobs[chemblId];
+                                    const isSubmitting = !!slurmSubmitting[jobKey];
+
+                                    let btnLabel = 'Run Boltz';
+                                    let btnColor = '#0d9488';
+                                    let btnHover = '#0f766e';
+                                    let btnDisabled = false;
+                                    let btnTitle = `Submit Boltz job for ${chemblId} to SLURM`;
+                                    let btnClick = () => submitSlurmJob(chemblId);
+
+                                    if (isSubmitting) {
+                                        btnLabel = 'Submitting…';
+                                        btnDisabled = true;
+                                    } else if (slurmInfo) {
+                                        const { status, slurm_job_id } = slurmInfo;
+                                        const shortId = slurm_job_id;
+                                        if (status === 'pending') {
+                                            btnLabel = `Pending #${shortId}`;
+                                            btnColor = '#d97706'; btnHover = '#b45309';
+                                            btnDisabled = true;
+                                            btnTitle = `SLURM job ${shortId} is queued`;
+                                        } else if (status === 'running') {
+                                            btnLabel = `Running #${shortId}`;
+                                            btnColor = '#2563eb'; btnHover = '#1d4ed8';
+                                            btnDisabled = true;
+                                            btnTitle = `SLURM job ${shortId} is running`;
+                                        } else if (status === 'failed') {
+                                            btnLabel = 'Failed — retry?';
+                                            btnColor = '#dc2626'; btnHover = '#b91c1c';
+                                            btnTitle = `SLURM job ${shortId} failed — click to resubmit`;
+                                        }
+                                    }
+
+                                    return (
+                                        <div key={target} style={{
+                                            height: `${cellSize.height}px`,
+                                            lineHeight: `${cellSize.height}px`,
+                                            whiteSpace: 'nowrap',
+                                            borderBottom: '1px solid transparent',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '6px'
+                                        }}>
+                                            <span style={{ display: 'inline-block', width: `${targetLabelWidth}px` }}>{chemblId}</span>
+                                            {hasBoltz && slurmInfo?.status !== 'done' && (
+                                                <button
+                                                    onClick={btnDisabled ? undefined : btnClick}
+                                                    disabled={btnDisabled}
+                                                    title={btnTitle}
+                                                    style={{
+                                                        fontSize: '10px',
+                                                        padding: '1px 5px',
+                                                        backgroundColor: btnColor,
+                                                        color: 'white',
+                                                        borderRadius: '3px',
+                                                        border: 'none',
+                                                        lineHeight: '1.4',
+                                                        flexShrink: 0,
+                                                        cursor: btnDisabled ? 'default' : 'pointer',
+                                                        transition: 'background-color 0.15s',
+                                                        opacity: btnDisabled && !isSubmitting ? 0.85 : 1,
+                                                    }}
+                                                    onMouseEnter={e => { if (!btnDisabled) e.currentTarget.style.backgroundColor = btnHover; }}
+                                                    onMouseLeave={e => { if (!btnDisabled) e.currentTarget.style.backgroundColor = btnColor; }}
+                                                >
+                                                    {btnLabel}
+                                                </button>
+                                            )}
+                                            {hasBoltz && slurmInfo?.status === 'done' && (
+                                                <a
+                                                    href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}${heatmapData?.Name ? `&ligand=${encodeURIComponent(heatmapData.Name)}` : ''}`}
+                                                    title={`Download Boltz-2 results for ${chemblId}${heatmapData?.Name ? ` / ${heatmapData.Name}` : ''}`}
+                                                    style={{
+                                                        fontSize: '10px',
+                                                        padding: '1px 5px',
+                                                        backgroundColor: '#6366f1',
+                                                        color: 'white',
+                                                        borderRadius: '3px',
+                                                        textDecoration: 'none',
+                                                        lineHeight: '1.4',
+                                                        flexShrink: 0,
+                                                    }}
+                                                >
+                                                    ↓ Download
+                                                </a>
+                                            )}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     )}

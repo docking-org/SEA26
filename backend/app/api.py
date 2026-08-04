@@ -1,9 +1,11 @@
 import os
 import sys
+import glob
 import shutil
 import uuid
 import json
 import asyncio
+import subprocess
 import pandas as pd
 from typing import Union
 from datetime import datetime
@@ -14,7 +16,7 @@ from fastapi import FastAPI, APIRouter, HTTPException
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from celery.utils.log import get_task_logger
 from dotenv import load_dotenv, find_dotenv
@@ -29,6 +31,7 @@ from celery.result import AsyncResult, GroupResult
 import pickle
 from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache, acquire_job_slot, release_job_slot, RateLimitExceeded
 from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress, load_gev_params, validate_smiles_input
+from .scripts.generate_boltz_jobs import generate_jobs as _generate_boltz_jobs
 
 env_path = os.path.join(os.path.dirname(__file__), "../../.env")
 load_dotenv(find_dotenv())
@@ -343,6 +346,266 @@ def get_best_similarity_per_target(request: Request):
             "best_similarity": best_similarity_json,
             "grouped_best_similarity": result_best_similarity}
 
+@router.get("/boltz_status")
+def boltz_status(request: Request):
+    task_id = request.query_params.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+    manifest_path = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs/boltz_manifest.tsv"
+    if not os.path.exists(manifest_path):
+        return {"jobs_by_chembl": {}}
+    manifest = pd.read_csv(manifest_path, sep="\t")
+    jobs_by_chembl = (
+        manifest.groupby("CHEMBL ID")["job"]
+        .apply(list)
+        .to_dict()
+    )
+    return {"jobs_by_chembl": jobs_by_chembl}
+
+@router.get("/boltz_run_sh")
+def boltz_run_sh(request: Request):
+    task_id  = request.query_params.get("task_id")
+    chembl_id = request.query_params.get("chembl_id")
+    if not task_id or not chembl_id:
+        raise HTTPException(status_code=400, detail="task_id and chembl_id required")
+    manifest_path = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs/boltz_manifest.tsv"
+    if not os.path.exists(manifest_path):
+        raise HTTPException(status_code=404, detail="No Boltz jobs found for this task")
+    manifest = pd.read_csv(manifest_path, sep="\t")
+    rows = manifest[manifest["CHEMBL ID"] == chembl_id]
+    if rows.empty:
+        raise HTTPException(status_code=404, detail=f"No Boltz jobs for {chembl_id}")
+    lines = ["#!/usr/bin/env bash", "set -euo pipefail",
+             f"## Boltz-2 jobs for {chembl_id} — {len(rows)} ligand(s)", ""]
+    for _, row in rows.iterrows():
+        lines.append(f"# {row['job']}")
+        lines.append(f"bash {row['run']}")
+        lines.append("")
+    script = "\n".join(lines)
+    from fastapi.responses import Response
+    return Response(
+        content=script,
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename=\"run_boltz_{chembl_id}.sh\""}
+    )
+
+@router.post("/generate_boltz_jobs")
+async def generate_boltz_jobs_endpoint(request: Request):
+    body = await request.json()
+    task_id = body.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+
+    job_root   = os.getenv("SEA_JOB_DIR")
+    result_dir = f"{job_root}/{task_id}/sea_output"
+    boltz_out  = f"{job_root}/{task_id}/boltz_jobs"
+    test_file  = f"{job_root}/{task_id}/input.smi"
+    lookup_file = os.path.join(os.getenv("SEA_DATA_FOLDER"), "uniprot_chembl_id.tsv")
+    log_file   = f"{job_root}/{task_id}/logs/boltz.log"
+
+    try:
+        manifest = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: _generate_boltz_jobs(
+                result_dir=result_dir,
+                testFile=test_file,
+                out_dir=boltz_out,
+                tc_min=0.0,
+                lookup_file=lookup_file,
+                predict_affinity=True,
+                log_file=log_file,
+                boltz_bin=os.getenv("BOLTZ_BIN", "/nfs/home/khtang/.conda/envs/sea25/bin/boltz"),
+            )
+        )
+        return {"status": "success", "n_jobs": int(manifest.shape[0]), "out_dir": boltz_out}
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+def _slurm_status(job_id: str) -> str:
+    r = subprocess.run(["squeue", f"--jobs={job_id}", "-h", "-o", "%T"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() or "UNKNOWN"
+
+_SLURM_STATE_MAP = {
+    "PENDING": "pending", "CONFIGURING": "pending",
+    "RUNNING": "running", "COMPLETING": "running",
+    "COMPLETED": "done",
+    "FAILED": "failed", "CANCELLED": "failed", "TIMEOUT": "failed",
+    "OUT_OF_MEMORY": "failed",
+}
+
+_TERMINAL_STATES = {"done", "failed"}
+
+@router.post("/boltz_submit_slurm")
+async def boltz_submit_slurm(request: Request):
+    body = await request.json()
+    task_id   = body.get("task_id")
+    chembl_id = body.get("chembl_id")
+    ligand    = body.get("ligand")  # optional; if omitted, runs all ligands for this target
+    if not task_id or not chembl_id:
+        raise HTTPException(status_code=400, detail="task_id and chembl_id required")
+
+    boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
+    manifest_path = f"{boltz_dir}/boltz_manifest.tsv"
+    if not os.path.exists(manifest_path):
+        raise HTTPException(status_code=404, detail="No Boltz jobs found for this task")
+
+    manifest = pd.read_csv(manifest_path, sep="\t")
+    rows = manifest[manifest["CHEMBL ID"] == chembl_id]
+    if ligand:
+        rows = rows[rows["Ligand"] == ligand]
+    if rows.empty:
+        raise HTTPException(status_code=404, detail=f"No Boltz jobs for {chembl_id}" + (f" / {ligand}" if ligand else ""))
+
+    job_key = f"{chembl_id}__{ligand}" if ligand else chembl_id
+    script_tag = f"{chembl_id}__{ligand}" if ligand else chembl_id
+
+    # Build sbatch wrapper that calls each existing run.sh sequentially
+    nodelist  = os.getenv("SLURM_NODELIST", "epyc-A40")
+    partition = os.getenv("SLURM_PARTITION", "gpu.q")
+    account   = os.getenv("SLURM_ACCOUNT", "")
+    qos       = os.getenv("SLURM_QOS", "")
+    time_     = os.getenv("SLURM_TIME", "01:00:00")
+    gpus      = os.getenv("SLURM_GPUS", "NVIDIA-A40:1")
+
+    lines = [
+        "#!/usr/bin/env bash",
+        f"#SBATCH --job-name=sea_boltz2_{script_tag}",
+        f"#SBATCH --partition={partition}",
+        f"#SBATCH --nodelist={nodelist}",
+    ]
+    if account:
+        lines.append(f"#SBATCH --account={account}")
+    if qos:
+        lines.append(f"#SBATCH --qos={qos}")
+    lines += [
+        f"#SBATCH --time={time_}",
+        f"#SBATCH --gres=gpu:{gpus}",
+        f"#SBATCH --output={boltz_dir}/slurm_{script_tag}_%j.log",
+        "",
+    ]
+    for _, row in rows.iterrows():
+        lines.append(f"bash {row['run']}")
+    lines.append("")
+
+    slurm_script = f"{boltz_dir}/slurm_{script_tag}.sh"
+    with open(slurm_script, "w") as f:
+        f.write("\n".join(lines))
+    os.chmod(slurm_script, 0o755)
+
+    result = subprocess.run(["sbatch", slurm_script], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"sbatch failed: {result.stderr.strip()}")
+
+    job_id = result.stdout.strip().split()[-1]
+
+    jobs_file = f"{boltz_dir}/.slurm_jobs.json"
+    slurm_jobs = {}
+    if os.path.exists(jobs_file):
+        with open(jobs_file) as f:
+            slurm_jobs = json.load(f)
+    slurm_jobs[job_key] = {
+        "slurm_job_id": job_id,
+        "chembl_id": chembl_id,
+        "ligand": ligand,
+        "submitted_at": datetime.utcnow().isoformat(),
+    }
+    with open(jobs_file, "w") as f:
+        json.dump(slurm_jobs, f)
+
+    return {"slurm_job_id": job_id}
+
+@router.get("/boltz_slurm_status")
+def boltz_slurm_status(request: Request):
+    task_id = request.query_params.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+
+    boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
+    jobs_file = f"{boltz_dir}/.slurm_jobs.json"
+    if not os.path.exists(jobs_file):
+        return {}
+
+    with open(jobs_file) as f:
+        slurm_jobs = json.load(f)
+
+    dirty = False
+    out = {}
+    for job_key, info in slurm_jobs.items():
+        job_id   = info["slurm_job_id"]
+        cached   = info.get("status")
+        # Skip Slurm query if we already know the terminal state
+        if cached in _TERMINAL_STATES:
+            status = cached
+        else:
+            raw    = _slurm_status(job_id)
+            status = _SLURM_STATE_MAP.get(raw, "unknown")
+            # sacct may be unreachable; fall back to checking output files
+            if status == "unknown":
+                chembl_id = info.get("chembl_id", job_key)
+                ligand    = info.get("ligand")
+                pred_base = os.path.join(boltz_dir, job_key, "boltz_out",
+                                         f"boltz_results_{job_key}", "predictions", job_key)
+                if os.path.isdir(pred_base) and glob.glob(os.path.join(pred_base, "*.cif")):
+                    status = "done"
+            if status in _TERMINAL_STATES:
+                slurm_jobs[job_key]["status"] = status
+                dirty = True
+        out[job_key] = {
+            "slurm_job_id": job_id,
+            "chembl_id":    info.get("chembl_id", job_key),
+            "ligand":       info.get("ligand"),
+            "status":       status,
+        }
+
+    if dirty:
+        with open(jobs_file, "w") as f:
+            json.dump(slurm_jobs, f)
+
+    return out
+
+@router.get("/boltz_download")
+def boltz_download(request: Request):
+    task_id   = request.query_params.get("task_id")
+    chembl_id = request.query_params.get("chembl_id")
+    ligand    = request.query_params.get("ligand")  # optional compound filter
+    if not task_id or not chembl_id:
+        raise HTTPException(status_code=400, detail="task_id and chembl_id required")
+
+    boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
+    manifest_path = f"{boltz_dir}/boltz_manifest.tsv"
+    if not os.path.exists(manifest_path):
+        raise HTTPException(status_code=404, detail="No Boltz jobs found for this task")
+
+    manifest = pd.read_csv(manifest_path, sep="\t")
+    rows = manifest[manifest["CHEMBL ID"] == chembl_id]
+    if ligand:
+        rows = rows[rows["Ligand"] == ligand]
+    if rows.empty:
+        raise HTTPException(status_code=404, detail=f"No Boltz jobs for {chembl_id}" + (f" / {ligand}" if ligand else ""))
+
+    import io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for _, row in rows.iterrows():
+            job_name = row["job"]
+            pred_dir = os.path.join(boltz_dir, job_name, "boltz_out",
+                                    f"boltz_results_{job_name}", "predictions", job_name)
+            if not os.path.isdir(pred_dir):
+                continue
+            for fpath in glob.glob(os.path.join(pred_dir, "*.cif")) + \
+                         glob.glob(os.path.join(pred_dir, "*.json")):
+                zf.write(fpath, arcname=f"{job_name}/{os.path.basename(fpath)}")
+    buf.seek(0)
+    filename = f"boltz_{chembl_id}" + (f"_{ligand}" if ligand else "") + ".zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
+    )
+
 @router.post("/warm_cache")
 def warm_cache():
     """Trigger Redis cache warming for target files."""
@@ -385,7 +648,7 @@ async def spa_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404:
         # Return proper JSON 404 for API routes
         if request.url.path.startswith("/api"):
-            return JSONResponse(status_code=404, content={"detail": "Not found"})
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
         # For non-API routes, serve index.html (let React Router handle it)
         return FileResponse(os.path.join(frontend_path, "index.html"), status_code=404)
     # For other HTTP errors, return a proper JSON response

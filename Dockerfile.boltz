@@ -1,0 +1,52 @@
+# Boltz-2 cofolding image
+# CUDA 12.8 runtime + PyTorch cu128 + boltz
+#
+# Build:
+#   docker build -f Dockerfile.boltz -t boltz2:latest .
+#
+# Run (mount your boltz cache so weights/CCD are not re-downloaded each time):
+#   docker run --gpus all \
+#     -v /local2/boltz_cache:/boltz_data \
+#     -v /nfs/exf/SEA/sea_jobs:/sea_jobs \
+#     boltz2:latest \
+#     boltz predict /sea_jobs/<task_id>/boltz_jobs/<job_name>/<job>.yaml \
+#       --out_dir /sea_jobs/<task_id>/boltz_jobs/<job_name>/boltz_out \
+#       --use_msa_server \
+#       --cache /boltz_data
+
+FROM nvidia/cuda:12.8.1-cudnn9-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# Boltz reads this to locate model weights + CCD data
+ENV BOLTZ_CACHE=/boltz_data
+
+# ── System deps ───────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3-pip \
+        git \
+        curl \
+        wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.11 1 \
+ && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+ && update-alternatives --install /usr/bin/pip     pip     /usr/bin/pip3       1
+
+# ── PyTorch (cu128 — matches CUDA 12.8 driver) ───────────────────────────────
+RUN pip install --no-cache-dir \
+    torch \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# ── Boltz-2 ───────────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir boltz==2.2.1
+
+# ── Entrypoint that auto-downloads data on first use ─────────────────────────
+COPY docker-boltz-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["boltz", "--help"]

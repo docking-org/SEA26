@@ -1,0 +1,51 @@
+# Boltz-2 cofolding image
+# CUDA 12.8 runtime + PyTorch cu128 + boltz
+#
+# Build (run from repo root):
+#   docker build -f backend/app/scripts/Dockerfile.boltz \
+#                -t boltz2:latest \
+#                backend/app/scripts/
+#
+# Run (mount your boltz cache so weights/CCD are not re-downloaded each time):
+#   docker run --gpus all \
+#     -v /local2/boltz_cache:/boltz_data \
+#     -v /nfs/exf/SEA/sea_jobs:/sea_jobs \
+#     boltz2:latest \
+#     boltz predict /sea_jobs/<task_id>/boltz_jobs/<job>/<job>.yaml \
+#       --out_dir /sea_jobs/<task_id>/boltz_jobs/<job>/boltz_out \
+#       --use_msa_server \
+#       --cache /boltz_data
+
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+# Boltz reads this to locate model weights + CCD data
+ENV BOLTZ_CACHE=/boltz_data
+
+# ── System deps ───────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-dev \
+        git \
+        curl \
+        wget \
+    && rm -rf /var/lib/apt/lists/* \
+ && update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+
+# ── PyTorch (cu126 — compatible with CUDA 12.6+ driver) ─────────────────────
+RUN pip install --no-cache-dir --break-system-packages \
+    torch \
+    --index-url https://download.pytorch.org/whl/cu126
+
+# ── Boltz-2 ───────────────────────────────────────────────────────────────────
+RUN pip install --no-cache-dir --break-system-packages boltz==2.2.1
+
+# ── Entrypoint: auto-downloads weights + CCD on first use ────────────────────
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["boltz", "--help"]

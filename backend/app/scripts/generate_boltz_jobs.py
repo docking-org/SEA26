@@ -258,7 +258,7 @@ def write_yaml(yaml_path, protein_chains, smiles, msa_mode, msa_dir, predict_aff
 def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa_mode = "server",
 		msa_dir = "msa", predict_affinity = True, boltz_out_dir = "boltz_out", boltz_extra_args = "",
 		lookup_file = "uniprot_chembl_id.tsv", stoich_overrides = {}, auto_complex = True,
-		log_file = None) :
+		log_file = None, boltz_bin = "/nfs/home/khtang/.conda/envs/sea25/bin/boltz") :
 	'''
 	result_dir	str	SEA result folder (result_<base>/)
 	testFile	str	raw test SMILES file (ligand fallback)
@@ -357,14 +357,20 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 
 			## Per-job run script -- paths are quoted so folders with spaces work
 			server_flag = "--use_msa_server " if msa_mode == "server" else ""
-			cmd = "boltz predict {yaml} --out_dir {out} {server}{extra}".format(
+			cmd = "{bin} predict {yaml} --out_dir {out} {server}{extra}".format(
+				bin    = boltz_bin,
 				yaml   = shlex.quote(os.path.abspath(yaml_path)),
 				out    = shlex.quote(os.path.abspath(os.path.join(job_dir, boltz_out_dir))),
 				server = server_flag,
 				extra  = boltz_extra_args).strip()
 			run_path = os.path.join(job_dir, "run.sh")
 			with open(run_path, "w") as fh :
-				fh.write("#!/usr/bin/env bash\nset -euo pipefail\n{}\n".format(cmd))
+				fh.write(
+					"#!/usr/bin/env bash\n"
+					"set -euo pipefail\n"
+					"export LD_LIBRARY_PATH=/nfs/home/khtang/.conda/envs/sea25/lib\n"
+					"{}\n".format(cmd)
+				)
 			os.chmod(run_path, 0o755)
 			job_scripts.append(os.path.abspath(run_path))
 
