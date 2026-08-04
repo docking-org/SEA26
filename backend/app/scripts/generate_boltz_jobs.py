@@ -116,15 +116,21 @@ def read_ligands(result_dir, base, chembl_id, testFile, tc_min, top_n) :
 	if not os.path.exists(best_file) :
 		best_file = os.path.join(result_dir, "best_similar_{}.tsv".format(chembl_id))
 
+	use_fallback = True
 	if os.path.exists(best_file) :
 		ligands = pd.read_csv(best_file, sep = "\t")
 		ligands = ligands.rename(columns = {"Tanimoto Coefficient" : "Tc", "Tanimoto_Coefficient" : "Tc"})
 		ligands = ligands[["Name", "SMILES", "Tc"]].copy()
 		ligands = ligands[ligands["Tc"] >= tc_min]
 		ligands = ligands.sort_values(by = ["Tc"], ascending = False, ignore_index = True)
-	else :
+		if ligands.shape[0] > 0 :
+			use_fallback = False
+
+	if use_fallback :
 		## Fallback: raw test file, "<SMILES> <Name>" per line, no Tc available
-		print("  Note: best_similar not found for {}; falling back to {}".format(chembl_id, testFile))
+		## (triggered when best_similar doesn't exist or was filtered empty by the
+		## upstream Tc cutoff in the celery worker)
+		print("  Note: best_similar empty/absent for {}; falling back to {}".format(chembl_id, testFile))
 		rows = np.loadtxt(testFile, comments = None, dtype = str)
 		if rows.ndim == 1 : rows = rows.reshape(1, -1)
 		ligands = pd.DataFrame()

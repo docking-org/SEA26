@@ -24,6 +24,20 @@ function HomePage() {
   const [errorMessage, setErrorMessage] = useState(''); // NEW: error message state
   const [bannerVisible, setBannerVisible] = useState(true);
 
+  const [altchaDisabled, setAltchaDisabled] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/captcha/challenge')
+      .then(r => r.json())
+      .then(data => {
+        if (data.disabled) {
+          setAltchaDisabled(true);
+          setAltchaVerified(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     const widget = altchaRef.current;
     if (!widget) return;
@@ -104,7 +118,7 @@ function HomePage() {
       return;
     }
 
-    if (!altchaPayload) {
+    if (!altchaDisabled && !altchaPayload) {
       setErrorMessage('Please complete the CAPTCHA verification first.');
       return;
     }
@@ -449,12 +463,14 @@ HDAC1 [O-]C(=O)CCC butyrate`}
             )}
 
             {/* ALTCHA Captcha Widget */}
-            <div className="mt-6 flex justify-center">
-              <altcha-widget
-                ref={altchaRef}
-                challenge="/api/captcha/challenge"
-              ></altcha-widget>
-            </div>
+            {!altchaDisabled && (
+              <div className="mt-6 flex justify-center">
+                <altcha-widget
+                  ref={altchaRef}
+                  challenge="/api/captcha/challenge"
+                ></altcha-widget>
+              </div>
+            )}
 
             <div className="mt-10 flex items-center justify-center gap-x-6">
               {isLoading ? (

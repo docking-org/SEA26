@@ -391,7 +391,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                     "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
                 })
                 best_similarity = best_similarity.sort_values(by=["Tanimoto_Coefficient"], ascending=False, ignore_index=True)
-                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.7]
+                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= os.getenv("TC_CUTOFF", 0.28)]
                 best_similarity.to_csv(f"{save_folder}/best_similar_{target_cid}.tsv", sep="\t", index=False)
 
                 # Top 10 similarity matrix — use argpartition instead of full sort
@@ -555,7 +555,7 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
     best_similarity["Tanimoto_Coefficient"] = list(result.max(axis = 1))
     best_similarity["Known_Hit_SMILES"] = [known.loc["{}".format(name), "canonical_smiles"] for name in result.idxmax(axis = "columns")] 
     best_similarity = best_similarity.sort_values(by = ["Tanimoto_Coefficient"], ascending = False, ignore_index = True)
-    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.7]
+    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.28]
     best_similarity.to_csv(f"{save_folder}/best_similar_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
     
     # get top 10 similarity matrix

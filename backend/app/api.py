@@ -93,7 +93,7 @@ def get_captcha_challenge():
     """Generate a new ALTCHA proof-of-work challenge."""
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
     if not hmac_secret:
-        raise HTTPException(status_code=500, detail="ALTCHA not configured")
+        return {"disabled": True}
     challenge = create_challenge_v1(hmac_key=hmac_secret, max_number=100000)
     return challenge.to_dict()
 
@@ -104,6 +104,8 @@ async def submit_task(request: Request) -> dict[str, str]:
 
     # Limit query to 10 lines
     non_empty_lines = [l for l in query.strip().splitlines() if l.strip()]
+    if len(non_empty_lines) == 0:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
     if len(non_empty_lines) > 10:
         raise HTTPException(status_code=400, detail=f"Query is limited to 10 compounds. You submitted {len(non_empty_lines)}.")
 
@@ -112,14 +114,15 @@ async def submit_task(request: Request) -> dict[str, str]:
         lines_detail = "; ".join([f"Line {line_num}: '{line}'" for line_num, line in invalid_smiles])
         raise HTTPException(status_code=400, detail=f"Invalid SMILES input. Please check the following lines: {lines_detail}")
 
-    # Verify ALTCHA captcha
-    altcha_payload = input_data.get("altcha")
-    if not altcha_payload:
-        raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+    # Verify ALTCHA captcha (skipped when ALTCHA_HMAC_SECRET is unset)
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
-    verified, err = verify_solution_v1(altcha_payload, hmac_secret)
-    if not verified:
-        raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
+    if hmac_secret:
+        altcha_payload = input_data.get("altcha")
+        if not altcha_payload:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+        verified, err = verify_solution_v1(altcha_payload, hmac_secret)
+        if not verified:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
 
     task_id = str(uuid.uuid4())
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
@@ -447,13 +450,15 @@ async def boltz_submit_slurm(request: Request):
     if not task_id or not chembl_id:
         raise HTTPException(status_code=400, detail="task_id and chembl_id required")
 
-    altcha_payload = body.get("altcha")
-    if not altcha_payload:
-        raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+    # Verify ALTCHA captcha (skipped when ALTCHA_HMAC_SECRET is unset)
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
-    verified, err = verify_solution_v1(altcha_payload, hmac_secret)
-    if not verified:
-        raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
+    if hmac_secret:
+        altcha_payload = body.get("altcha")
+        if not altcha_payload:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+        verified, err = verify_solution_v1(altcha_payload, hmac_secret)
+        if not verified:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
 
     boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
     manifest_path = f"{boltz_dir}/boltz_manifest.tsv"

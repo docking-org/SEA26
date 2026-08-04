@@ -1,11 +1,12 @@
 # Development compose — standalone
 # Usage: docker compose -f compose.dev.yml up --build
-
+name:
+  sea-dev
 services:
 #### REDIS ####
   redis:
     image: redis:latest
-    container_name: sea-redis
+    # container_name: sea-redis
     restart: unless-stopped
     networks:
       - ocean
@@ -22,7 +23,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: sea-redisbeat
+    # container_name: sea-redisbeat
     restart: unless-stopped
     networks:
       - ocean
@@ -43,7 +44,7 @@ services:
       dockerfile: Dockerfile.dev
       args:
         - VITE_CHEMBL_VERSION=${VITE_CHEMBL_VERSION}
-    container_name: sea-web
+    # container_name: sea-web
     restart: unless-stopped
     networks:
       - ocean
@@ -94,7 +95,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.dev
-    container_name: sea-redisworker
+    # container_name: sea-redisworker
     restart: unless-stopped
     networks:
       - ocean
