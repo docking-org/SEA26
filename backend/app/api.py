@@ -447,6 +447,14 @@ async def boltz_submit_slurm(request: Request):
     if not task_id or not chembl_id:
         raise HTTPException(status_code=400, detail="task_id and chembl_id required")
 
+    altcha_payload = body.get("altcha")
+    if not altcha_payload:
+        raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+    hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
+    verified, err = verify_solution_v1(altcha_payload, hmac_secret)
+    if not verified:
+        raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
+
     boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
     manifest_path = f"{boltz_dir}/boltz_manifest.tsv"
     if not os.path.exists(manifest_path):

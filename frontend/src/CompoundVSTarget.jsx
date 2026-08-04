@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import Layout from './components/Layout';
+import 'altcha';
 
 // Custom hook for responsive breakpoints
 function useWindowSize() {
@@ -100,6 +101,12 @@ export default function CompoundVsTarget() {
     const [boltzJobsByChembl, setBoltzJobsByChembl] = useState({}); // chemblId -> [job names]
     const [slurmJobs, setSlurmJobs] = useState({}); // chemblId -> { slurm_job_id, status }
     const [slurmSubmitting, setSlurmSubmitting] = useState({}); // chemblId -> bool
+    const [selectedBoltzJob, setSelectedBoltzJob] = useState(''); // full job name e.g. "CHEMBL123__LigandName"
+    const altchaRef = useRef(null);
+    const [altchaPayload, setAltchaPayload] = useState(null);
+    const [altchaVerified, setAltchaVerified] = useState(false);
+    const rightColumnRef = useRef(null);
+    const [rightColumnHeight, setRightColumnHeight] = useState(null);
     const heatmapRef = useRef(null);
     const { width: windowWidth, height: windowHeight } = useWindowSize();
     
@@ -382,7 +389,7 @@ export default function CompoundVsTarget() {
             const resp = await fetch('/api/boltz_submit_slurm', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ task_id: taskId, chembl_id: chemblId, ligand }),
+                body: JSON.stringify({ task_id: taskId, chembl_id: chemblId, ligand, altcha: altchaPayload }),
             });
             const data = await resp.json();
             if (resp.ok) {
@@ -390,6 +397,9 @@ export default function CompoundVsTarget() {
                     ...prev,
                     [jobKey]: { slurm_job_id: data.slurm_job_id, chembl_id: chemblId, ligand, status: 'pending' },
                 }));
+                if (altchaRef.current) altchaRef.current.reset();
+                setAltchaPayload(null);
+                setAltchaVerified(false);
             } else {
                 alert(`SLURM submission failed: ${data.detail || 'unknown error'}`);
             }
@@ -407,6 +417,22 @@ export default function CompoundVsTarget() {
             fetchSlurmStatus();
         }
     }, [taskId]);
+
+    useEffect(() => {
+        const widget = altchaRef.current;
+        if (!widget) return;
+        const handleStateChange = (ev) => {
+            if (ev.detail.state === 'verified' && ev.detail.payload) {
+                setAltchaPayload(ev.detail.payload);
+                setAltchaVerified(true);
+            } else {
+                setAltchaPayload(null);
+                setAltchaVerified(false);
+            }
+        };
+        widget.addEventListener('statechange', handleStateChange);
+        return () => widget.removeEventListener('statechange', handleStateChange);
+    }, []);
 
     // Poll SLURM status every 30 s while any job is active
     useEffect(() => {
@@ -426,6 +452,18 @@ export default function CompoundVsTarget() {
     useEffect(() => {
         console.log("heatmapData updated:", heatmapData);
     }, [heatmapData]);
+
+    useEffect(() => {
+        const el = rightColumnRef.current;
+        if (!el) return;
+        const observer = new ResizeObserver(entries => {
+            for (const entry of entries) {
+                setRightColumnHeight(entry.contentRect.height);
+            }
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
 
     // Estimate the width of the longest target label
     const targetLabelWidth = useMemo(() => {
@@ -454,8 +492,10 @@ export default function CompoundVsTarget() {
             Math.floor(availableWidth / tableData.maxHits)
         );
 
-        // Calculate height to fit all rows within available vertical space
-        const availableHeight = windowHeight - (isMobile ? 250 : 350);
+        // Calculate height so all rows together match the right column stack height
+        const availableHeight = (!isMobile && rightColumnHeight)
+            ? rightColumnHeight
+            : windowHeight - (isMobile ? 250 : 350);
         const calculatedHeight = Math.max(
             isMobile ? 10 : 12,
             Math.floor(availableHeight / tableData.targets.length)
@@ -465,7 +505,7 @@ export default function CompoundVsTarget() {
             width: calculatedWidth,
             height: calculatedHeight
         };
-    }, [tableData, isMobile, isTablet, windowWidth, windowHeight, targetLabelWidth]);
+    }, [tableData, isMobile, isTablet, windowWidth, windowHeight, targetLabelWidth, rightColumnHeight]);
 
     // Responsive molecule image sizes
     const moleculeSize = useMemo(() => {
@@ -550,42 +590,28 @@ export default function CompoundVsTarget() {
                     {!isMobile && <> | <strong>SMILES:</strong> {heatmapData.SMILES}</>}
                 </p>
             )}
-            {/* Generate Boltz Jobs button */}
-            <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                <button
-                    onClick={submitBoltz}
-                    disabled={boltzStatus === 'loading'}
-                    className="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-                >
-                    {boltzStatus === 'loading' ? 'Generating...' : 'Generate Boltz Jobs'}
-                </button>
-                {boltzStatus === 'success' && (
-                    <span style={{ color: '#16a34a', fontSize: '13px' }}>{boltzMessage}</span>
-                )}
-                {boltzStatus === 'error' && (
-                    <span style={{ color: '#dc2626', fontSize: '13px' }}>{boltzMessage}</span>
-                )}
-            </div>
 
-            {loading && <p>Loading...</p>}
+{loading && <p>Loading...</p>}
             {error && <p style={{ color: 'red' }}>{error}</p>}
             {!rdkitReady && <p style={{ color: '#666' }}>Loading RDKit...</p>}
             
     
             {/* Main content area - stacked on mobile, side by side on desktop */}
-            <div style={{ 
-                display: 'flex', 
+            <div style={{
+                display: 'flex',
                 flexDirection: isMobile ? 'column' : 'row',
-                gap: '20px', 
-                marginTop: '20px', 
-                alignItems: 'flex-start',
+                gap: '20px',
+                marginTop: '20px',
+                alignItems: isMobile ? 'flex-start' : 'stretch',
                 width: '100%'
             }}>
                 {/* Heatmap table */}
                 <div style={{
                     flexShrink: 0,
                     minWidth: 0,
-                    maxWidth: '100%'
+                    maxWidth: '100%',
+                    height: '100%',
+                    overflow: 'auto',
                 }}>
                     {tableData && (
                         <div style={{
@@ -642,128 +668,44 @@ export default function CompoundVsTarget() {
                                 fontSize: isMobile ? '10px' : '12px',
                                 flexShrink: 0
                             }}>
-                                {tableData.targets.map(target => {
-                                    const chemblId = target.split(':')[0];
-                                    const jobs = boltzJobsByChembl[chemblId];
-                                    const ligandName = heatmapData?.Name;
-                                    const hasBoltz = jobs && (
-                                        ligandName
-                                            ? jobs.some(j => j === `${chemblId}__${ligandName}`)
-                                            : jobs.length > 0
-                                    );
-                                    const jobKey = ligandName ? `${chemblId}__${ligandName}` : chemblId;
-                                    const slurmInfo = slurmJobs[jobKey] ?? slurmJobs[chemblId];
-                                    const isSubmitting = !!slurmSubmitting[jobKey];
-
-                                    let btnLabel = 'Run Boltz';
-                                    let btnColor = '#0d9488';
-                                    let btnHover = '#0f766e';
-                                    let btnDisabled = false;
-                                    let btnTitle = `Submit Boltz job for ${chemblId} to SLURM`;
-                                    let btnClick = () => submitSlurmJob(chemblId);
-
-                                    if (isSubmitting) {
-                                        btnLabel = 'Submitting…';
-                                        btnDisabled = true;
-                                    } else if (slurmInfo) {
-                                        const { status, slurm_job_id } = slurmInfo;
-                                        const shortId = slurm_job_id;
-                                        if (status === 'pending') {
-                                            btnLabel = `Pending #${shortId}`;
-                                            btnColor = '#d97706'; btnHover = '#b45309';
-                                            btnDisabled = true;
-                                            btnTitle = `SLURM job ${shortId} is queued`;
-                                        } else if (status === 'running') {
-                                            btnLabel = `Running #${shortId}`;
-                                            btnColor = '#2563eb'; btnHover = '#1d4ed8';
-                                            btnDisabled = true;
-                                            btnTitle = `SLURM job ${shortId} is running`;
-                                        } else if (status === 'failed') {
-                                            btnLabel = 'Failed — retry?';
-                                            btnColor = '#dc2626'; btnHover = '#b91c1c';
-                                            btnTitle = `SLURM job ${shortId} failed — click to resubmit`;
-                                        }
-                                    }
-
-                                    return (
-                                        <div key={target} style={{
-                                            height: `${cellSize.height}px`,
-                                            lineHeight: `${cellSize.height}px`,
-                                            whiteSpace: 'nowrap',
-                                            borderBottom: '1px solid transparent',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '6px'
-                                        }}>
-                                            <span style={{ display: 'inline-block', width: `${targetLabelWidth}px` }}>{chemblId}</span>
-                                            {hasBoltz && slurmInfo?.status !== 'done' && (
-                                                <button
-                                                    onClick={btnDisabled ? undefined : btnClick}
-                                                    disabled={btnDisabled}
-                                                    title={btnTitle}
-                                                    style={{
-                                                        fontSize: '10px',
-                                                        padding: '1px 5px',
-                                                        backgroundColor: btnColor,
-                                                        color: 'white',
-                                                        borderRadius: '3px',
-                                                        border: 'none',
-                                                        lineHeight: '1.4',
-                                                        flexShrink: 0,
-                                                        cursor: btnDisabled ? 'default' : 'pointer',
-                                                        transition: 'background-color 0.15s',
-                                                        opacity: btnDisabled && !isSubmitting ? 0.85 : 1,
-                                                    }}
-                                                    onMouseEnter={e => { if (!btnDisabled) e.currentTarget.style.backgroundColor = btnHover; }}
-                                                    onMouseLeave={e => { if (!btnDisabled) e.currentTarget.style.backgroundColor = btnColor; }}
-                                                >
-                                                    {btnLabel}
-                                                </button>
-                                            )}
-                                            {hasBoltz && slurmInfo?.status === 'done' && (
-                                                <a
-                                                    href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}${heatmapData?.Name ? `&ligand=${encodeURIComponent(heatmapData.Name)}` : ''}`}
-                                                    title={`Download Boltz-2 results for ${chemblId}${heatmapData?.Name ? ` / ${heatmapData.Name}` : ''}`}
-                                                    style={{
-                                                        fontSize: '10px',
-                                                        padding: '1px 5px',
-                                                        backgroundColor: '#6366f1',
-                                                        color: 'white',
-                                                        borderRadius: '3px',
-                                                        textDecoration: 'none',
-                                                        lineHeight: '1.4',
-                                                        flexShrink: 0,
-                                                    }}
-                                                >
-                                                    ↓ Download
-                                                </a>
-                                            )}
-                                        </div>
-                                    );
-                                })}
+                                {tableData.targets.map(target => (
+                                    <div key={target} style={{
+                                        height: `${cellSize.height}px`,
+                                        lineHeight: `${cellSize.height}px`,
+                                        whiteSpace: 'nowrap',
+                                        borderBottom: '1px solid transparent'
+                                    }}>
+                                        {target.split(':')[0]}
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     )}
                 </div>
 
-                {/* Tooltip with Molecule Images */}
-                <div style={{
+                {/* Right column: molecule viewer + Boltz card */}
+                <div ref={rightColumnRef} style={{
                     flex: '1 1 0%',
                     minWidth: 0,
-                    minHeight: isMobile ? '250px' : '300px',
                     width: '100%',
-                    position: 'sticky',
-                    top: '20px',
-                    alignSelf: 'flex-start'
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '20px',
                 }}>
+                    {/* Tooltip with Molecule Images */}
+                    <div style={{
+                        position: 'sticky',
+                        top: '20px',
+                    }}>
                     <div style={{
                         backgroundColor: 'white',
                         border: lockedTooltip ? '2px solid #007bff' : '1px solid #e0e0e0',
                         color: '#333',
                         borderRadius: '8px',
-                        padding: isMobile ? '15px' : '20px',
+                        padding: isMobile ? '15px 15px' : '20px 20px',
                         boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                        width: '100%'
+                        width: '100%',
+                        boxSizing: 'border-box',
                     }}>
                         {/* Locked indicator */}
                         {lockedTooltip && (
@@ -922,10 +864,149 @@ export default function CompoundVsTarget() {
                                     }
                                 </div>
                             )}
+                        </div>{/* end molecules side-by-side */}
+                    </div>{/* end white molecule card */}
+                    </div>{/* end sticky wrapper */}
+
+                    {/* Boltz-2 Structure Prediction Card */}
+                    <div style={{
+                        backgroundColor: 'white',
+                        border: '1px solid #e0e0e0',
+                        borderRadius: '8px',
+                        padding: isMobile ? '16px' : '20px',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+                    }}>
+                        <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '600', color: '#1a1a1a' }}>
+                            Boltz-2 Structure Prediction
+                        </h3>
+
+                        {/* Step 1: Generate jobs */}
+                        <div style={{ marginBottom: '16px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                                <button
+                                    onClick={submitBoltz}
+                                    disabled={boltzStatus === 'loading'}
+                                    className="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+                                >
+                                    {boltzStatus === 'loading' ? 'Generating...' : 'Generate Boltz Jobs'}
+                                </button>
+                                {boltzStatus === 'success' && (
+                                    <span style={{ color: '#16a34a', fontSize: '13px' }}>{boltzMessage}</span>
+                                )}
+                                {boltzStatus === 'error' && (
+                                    <span style={{ color: '#dc2626', fontSize: '13px' }}>{boltzMessage}</span>
+                                )}
+                            </div>
                         </div>
-                    </div>
-                </div>
-            </div>
+
+                        {/* Step 2: Select job, verify captcha, and submit */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            {Object.keys(boltzJobsByChembl).length > 0 && (
+                                <select
+                                    value={selectedBoltzJob}
+                                    onChange={e => setSelectedBoltzJob(e.target.value)}
+                                    style={{
+                                        padding: '6px 10px',
+                                        border: '1px solid #d1d5db',
+                                        borderRadius: '6px',
+                                        fontSize: '13px',
+                                        color: '#374151',
+                                        backgroundColor: 'white',
+                                        maxWidth: '320px'
+                                    }}
+                                >
+                                    <option value="">Select a Boltz-2 job...</option>
+                                    {Object.entries(boltzJobsByChembl).flatMap(([chemblId, jobs]) =>
+                                        jobs.map(jobName => {
+                                            const sep = jobName.indexOf('__');
+                                            const ligand = sep !== -1 ? jobName.slice(sep + 2) : null;
+                                            const label = ligand ? `${chemblId} / ${ligand}` : chemblId;
+                                            return <option key={jobName} value={jobName}>{label}</option>;
+                                        })
+                                    )}
+                                </select>
+                            )}
+
+                            <div>
+                                <altcha-widget
+                                    ref={altchaRef}
+                                    challenge="/api/captcha/challenge"
+                                ></altcha-widget>
+                            </div>
+
+                            {selectedBoltzJob && (() => {
+                                const sep = selectedBoltzJob.indexOf('__');
+                                const chemblId = sep !== -1 ? selectedBoltzJob.slice(0, sep) : selectedBoltzJob;
+                                const ligand = sep !== -1 ? selectedBoltzJob.slice(sep + 2) : null;
+                                const slurmInfo = slurmJobs[selectedBoltzJob] ?? slurmJobs[chemblId];
+                                const isSubmitting = !!slurmSubmitting[selectedBoltzJob];
+                                const status = slurmInfo?.status;
+
+                                if (status === 'done') {
+                                    return (
+                                        <a
+                                            href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}${ligand ? `&ligand=${encodeURIComponent(ligand)}` : ''}`}
+                                            style={{
+                                                display: 'inline-block',
+                                                padding: '6px 16px',
+                                                backgroundColor: '#6366f1',
+                                                color: 'white',
+                                                borderRadius: '6px',
+                                                textDecoration: 'none',
+                                                fontSize: '13px',
+                                                fontWeight: '500'
+                                            }}
+                                        >
+                                            ↓ Download Results
+                                        </a>
+                                    );
+                                }
+
+                                let btnLabel = 'Submit to SLURM';
+                                let btnColor = '#0d9488';
+                                let btnDisabled = !altchaVerified;
+
+                                if (isSubmitting) {
+                                    btnLabel = 'Submitting…';
+                                    btnDisabled = true;
+                                } else if (status === 'pending') {
+                                    btnLabel = `Pending #${slurmInfo.slurm_job_id}`;
+                                    btnColor = '#d97706';
+                                    btnDisabled = true;
+                                } else if (status === 'running') {
+                                    btnLabel = `Running #${slurmInfo.slurm_job_id}`;
+                                    btnColor = '#2563eb';
+                                    btnDisabled = true;
+                                } else if (status === 'failed') {
+                                    btnLabel = 'Failed — retry?';
+                                    btnColor = '#dc2626';
+                                    btnDisabled = !altchaVerified;
+                                }
+
+                                return (
+                                    <button
+                                        onClick={btnDisabled ? undefined : () => submitSlurmJob(chemblId)}
+                                        disabled={btnDisabled}
+                                        style={{
+                                            padding: '6px 16px',
+                                            backgroundColor: btnDisabled ? '#9ca3af' : btnColor,
+                                            color: 'white',
+                                            border: 'none',
+                                            borderRadius: '6px',
+                                            fontSize: '13px',
+                                            fontWeight: '500',
+                                            cursor: btnDisabled ? 'not-allowed' : 'pointer',
+                                        }}
+                                    >
+                                        {btnLabel}
+                                    </button>
+                                );
+                            })()}
+                        </div>
+                    </div>{/* end Boltz card */}
+
+                </div>{/* end right column */}
+            </div>{/* end main two-column row */}
         </Layout>
     )
 }
