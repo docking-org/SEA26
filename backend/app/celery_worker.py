@@ -608,10 +608,92 @@ def cleanup_task(*args, **kwargs):
                 print(f"Removed old job folder: {dir_path}")
     return "Cleanup completed."
 
+@celery.task(name="boltz.drain_queue")
+def drain_boltz_queue():
+    """Submit queued Boltz2 jobs to SLURM when running slots are available."""
+    import subprocess, glob as _glob, json as _json
+
+    # Distributed lock — only one drain runs at a time across all workers
+    lock_key = "boltz_drain_lock"
+    lock_ttl = 60  # seconds; longer than one drain cycle
+    acquired = r.set(lock_key, "1", nx=True, ex=lock_ttl)
+    if not acquired:
+        return
+
+    try:
+        MAX_RUNNING = int(os.getenv("BOLTZ_MAX_RUNNING", 4))
+
+        # Count how many Boltz jobs are currently in SLURM (pending or running)
+        try:
+            try:
+                import pwd as _pwd
+                username = _pwd.getpwuid(os.getuid()).pw_name
+            except KeyError:
+                username = str(os.getuid())
+            sq = subprocess.run(
+                ["squeue", "--noheader", "--format=%j", f"--user={username}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if sq.returncode != 0:
+                print(f"drain_boltz_queue: squeue error: {sq.stderr.strip()}")
+                return
+            running = sum(1 for line in sq.stdout.splitlines() if line.strip().startswith("sea_boltz2_"))
+        except Exception as e:
+            print(f"drain_boltz_queue: cannot count running jobs: {e}")
+            return  # Fail safe: don't submit if we can't count
+
+        slots_free = MAX_RUNNING - running
+        if slots_free <= 0:
+            return
+
+        submitted = 0
+        while submitted < slots_free:
+            entry_raw = r.lpop("boltz_queue")
+            if not entry_raw:
+                break
+            try:
+                entry = _json.loads(entry_raw)
+                job_key      = entry["job_key"]
+                boltz_dir    = entry["boltz_dir"]
+                slurm_script = entry["slurm_script"]
+
+                result = subprocess.run(["sbatch", slurm_script], capture_output=True, text=True, timeout=30)
+                if result.returncode != 0:
+                    print(f"drain_boltz_queue: sbatch failed for {job_key}: {result.stderr.strip()}")
+                    # Put the job back at the front of the queue so it isn't lost
+                    r.lpush("boltz_queue", entry_raw)
+                    break
+
+                job_id = result.stdout.strip().split()[-1]
+                submitted += 1
+
+                jobs_file = f"{boltz_dir}/.slurm_jobs.json"
+                slurm_jobs = {}
+                if os.path.exists(jobs_file):
+                    with open(jobs_file) as _f:
+                        slurm_jobs = _json.load(_f)
+                if job_key in slurm_jobs:
+                    slurm_jobs[job_key]["slurm_job_id"] = job_id
+                    slurm_jobs[job_key]["status"] = "pending"
+                    slurm_jobs[job_key]["submitted_at"] = __import__("datetime").datetime.utcnow().isoformat()
+                with open(jobs_file, "w") as _f:
+                    _json.dump(slurm_jobs, _f)
+
+                print(f"drain_boltz_queue: submitted {job_key} → SLURM job {job_id} ({submitted}/{slots_free} slots used)")
+            except Exception as e:
+                print(f"drain_boltz_queue: error processing entry: {e}")
+    finally:
+        r.delete(lock_key)
+
+
 celery.conf.beat_schedule = {
     'daily-cleanup-task': {
         'task': 'main.cleanup_task',
         'schedule': crontab(minute=10, hour='*'),  # Run every hour
+    },
+    'drain-boltz-queue': {
+        'task': 'boltz.drain_queue',
+        'schedule': 30.0,  # every 30 seconds
     },
 }
 

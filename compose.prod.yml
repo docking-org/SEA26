@@ -24,6 +24,7 @@ services:
       context: .
       dockerfile: Dockerfile.prod
     # container_name: sea-redisbeat
+    user: "1020:1020"
     restart: unless-stopped
     networks:
       - ocean
@@ -34,8 +35,6 @@ services:
       redis:
         condition: service_healthy
     command: celery -A backend.app.celery_worker beat -l info -s /tmp/sea-celerybeat-schedule
-    volumes:
-      - beat_scheduler:/tmp
 
 #### WEB APPLICATION ####
   web:
@@ -45,6 +44,7 @@ services:
       args:
         - VITE_CHEMBL_VERSION=${VITE_CHEMBL_VERSION}
     # container_name: sea-web
+    user: "1020:1020"
     restart: unless-stopped
     networks:
       - ocean
@@ -95,6 +95,7 @@ services:
       context: .
       dockerfile: Dockerfile.prod
     # container_name: sea-redisworker
+    user: "1020:1020"
     restart: unless-stopped
     networks:
       - ocean
@@ -111,6 +112,22 @@ services:
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
+      # Slurm binaries
+      - /usr/bin/sbatch:/usr/bin/sbatch:ro
+      - /usr/bin/squeue:/usr/bin/squeue:ro
+      - /usr/bin/sacct:/usr/bin/sacct:ro
+      # Slurm libraries
+      - /usr/lib64/libslurm.so.38.0.0:/usr/lib64/libslurm.so.38.0.0:ro
+      - /usr/lib64/libslurm.so.38:/usr/lib64/libslurm.so.38:ro
+      - /usr/lib64/libslurm.so:/usr/lib64/libslurm.so:ro
+      - /usr/lib64/slurm:/usr/lib64/slurm:ro
+      # Slurm config
+      - /etc/slurm:/etc/slurm:ro
+      # Munge auth
+      - /usr/lib64/libmunge.so.2.0.0:/usr/lib64/libmunge.so.2.0.0:ro
+      - /usr/lib64/libmunge.so.2:/usr/lib64/libmunge.so.2:ro
+      - /usr/lib64/libmunge.so:/usr/lib64/libmunge.so:ro
+      - /run/munge:/run/munge:ro
 
 
 ##### ----- NETWORKS ------ #####

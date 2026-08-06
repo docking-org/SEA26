@@ -29,7 +29,7 @@ from .celery_worker import celery
 from celery import group, chord
 from celery.result import AsyncResult, GroupResult
 import pickle
-from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache, acquire_job_slot, release_job_slot, RateLimitExceeded
+from .celery_worker import _mkdir_, remove_salt, sea_target_score, sea_target_score_batch, warm_target_cache, postprocess_sea_job, redis_cache, acquire_job_slot, release_job_slot, RateLimitExceeded, r as _redis
 from .helper import get_smiles_property, known_test_tc, tsv2json, init_progress_file, save_progress, get_progress, load_gev_params, validate_smiles_input
 from .scripts.generate_boltz_jobs import generate_jobs as _generate_boltz_jobs
 
@@ -88,7 +88,7 @@ task_logger = get_task_logger(__name__)
 def read_root() -> dict[str, Union[str, int]]:
     return {"msg": "Welcome to SEA", "version": 1}
 
-@router.get("/captcha/challenge")
+@router.get("/captcha/challenge", include_in_schema=False)
 def get_captcha_challenge():
     """Generate a new ALTCHA proof-of-work challenge."""
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
@@ -311,7 +311,6 @@ def compound_vs_target(request : Request):
     # read json 
     with open(heatmap_file) as hm_file:
         heatmap_data = json.load(hm_file)
-    # print(json.dumps(heatmap_data, indent=4))
     return heatmap_data
 
 @router.get("/best_similarity")
@@ -530,6 +529,130 @@ async def boltz_submit_slurm(request: Request):
 
     return {"slurm_job_id": job_id}
 
+@router.post("/boltz_submit_from_heatmap", include_in_schema=False)
+async def boltz_submit_from_heatmap(request: Request):
+    from .scripts.generate_boltz_jobs import write_yaml, sanitize
+    body = await request.json()
+    task_id     = body.get("task_id")
+    chembl_id   = body.get("chembl_id")
+    smiles      = body.get("smiles")
+    ligand_name = body.get("ligand_name", "query")
+    if not task_id or not chembl_id or not smiles:
+        raise HTTPException(status_code=400, detail="task_id, chembl_id, and smiles required")
+
+    # Verify ALTCHA captcha (skipped when ALTCHA_HMAC_SECRET is unset)
+    hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
+    if hmac_secret:
+        altcha_payload = body.get("altcha")
+        if not altcha_payload:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+        verified, err = verify_solution_v1(altcha_payload, hmac_secret)
+        if not verified:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
+
+    # Enforce queue limit: max n queued jobs waiting for SLURM
+    BOLTZ_LIMITS = os.getenv("BOLTZ_LIMITS", "4/20")
+    MAX_PENDING = int(BOLTZ_LIMITS.split("/")[-1])
+    queue_len = _redis.llen("boltz_queue")
+    if queue_len >= MAX_PENDING:
+        raise HTTPException(status_code=429, detail=f"Queue full ({queue_len}/{MAX_PENDING} jobs waiting). Please try again later.")
+
+    # Read protein sequence from sea_result.tsv
+    sea_result_path = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output/sea_result.tsv"
+    if not os.path.exists(sea_result_path):
+        raise HTTPException(status_code=404, detail="SEA results not found for this task")
+    targets = pd.read_csv(sea_result_path, sep="\t")
+    rows = targets[targets["Target_Chembl_ID"] == chembl_id]
+    if rows.empty:
+        raise HTTPException(status_code=404, detail=f"Target {chembl_id} not found in SEA results")
+
+    chains = [
+        {"sequence": str(r["Sequence"]).strip(),
+         "label": str(r.get("Uniprot_ID", chembl_id))}
+        for _, r in rows.iterrows()
+        if str(r.get("Sequence", "")).strip()
+    ]
+    if not chains:
+        raise HTTPException(status_code=400, detail=f"No protein sequence available for {chembl_id}")
+
+    lig_safe = sanitize(ligand_name)
+    job_name  = f"{sanitize(chembl_id)}__{lig_safe}"
+    boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
+    job_dir   = f"{boltz_dir}/{job_name}"
+    os.makedirs(job_dir, exist_ok=True)
+
+    # Write Boltz2 input YAML
+    yaml_path = f"{job_dir}/{job_name}.yaml"
+    if os.path.exists(yaml_path):
+        os.remove(yaml_path)
+    write_yaml(yaml_path, chains, smiles, msa_mode="server", msa_dir="", predict_affinity=True)
+
+    # Write per-job run.sh
+    boltz_bin = os.getenv("BOLTZ_BIN")
+    import shlex
+    cmd = f"{boltz_bin} predict {shlex.quote(os.path.abspath(yaml_path))} --out_dir {shlex.quote(os.path.abspath(os.path.join(job_dir, 'boltz_out')))} --use_msa_server"
+    run_path = f"{job_dir}/run.sh"
+    if os.path.exists(run_path):
+        os.remove(run_path)
+    with open(run_path, "w") as f:
+        f.write("#!/usr/bin/env bash\nset -euo pipefail\n"
+                f"export HOME={os.path.abspath(job_dir)}\n"
+                f"export NUMBA_CACHE_DIR={os.path.abspath(job_dir)}/numba_cache\n"
+                f"export MPLCONFIGDIR={os.path.abspath(job_dir)}/mpl_cache\n"
+                "export LD_LIBRARY_PATH=/nfs/home/khtang/.conda/envs/sea25/lib\n"
+                f"{cmd}\n")
+    os.chmod(run_path, 0o755)
+
+    # Build and submit SLURM wrapper
+    nodelist  = os.getenv("SLURM_NODELIST")
+    partition = os.getenv("SLURM_PARTITION")
+    time_     = os.getenv("SLURM_TIME")
+    gpus      = os.getenv("SLURM_GPUS")
+
+    sbatch_lines = [
+        "#!/usr/bin/env bash",
+        f"#SBATCH --job-name=sea_boltz2_{job_name}",
+        f"#SBATCH --partition={partition}",
+        f"#SBATCH --nodelist={nodelist}",
+    ]
+    sbatch_lines += [
+        f"#SBATCH --time={time_}",
+        f"#SBATCH --gres=gpu:{gpus}",
+        f"#SBATCH --output={boltz_dir}/slurm_{job_name}_%j.log",
+        "",
+        f"bash {os.path.abspath(run_path)}",
+        "",
+    ]
+    slurm_script = f"{boltz_dir}/slurm_{job_name}.sh"
+    with open(slurm_script, "w") as f:
+        f.write("\n".join(sbatch_lines))
+    os.chmod(slurm_script, 0o755)
+
+    # Enqueue into Redis for the drain task to submit to SLURM when a slot opens
+    _redis.rpush("boltz_queue", json.dumps({
+        "task_id":      task_id,
+        "job_key":      job_name,
+        "boltz_dir":    boltz_dir,
+        "slurm_script": slurm_script,
+    }))
+
+    jobs_file = f"{boltz_dir}/.slurm_jobs.json"
+    slurm_jobs = {}
+    if os.path.exists(jobs_file):
+        with open(jobs_file) as f:
+            slurm_jobs = json.load(f)
+    slurm_jobs[job_name] = {
+        "slurm_job_id": None,
+        "chembl_id": chembl_id,
+        "ligand": ligand_name,
+        "status": "queued",
+        "queued_at": datetime.utcnow().isoformat(),
+    }
+    with open(jobs_file, "w") as f:
+        json.dump(slurm_jobs, f)
+
+    return {"status": "queued", "job_key": job_name}
+
 @router.get("/boltz_slurm_status")
 def boltz_slurm_status(request: Request):
     task_id = request.query_params.get("task_id")
@@ -547,18 +670,18 @@ def boltz_slurm_status(request: Request):
     dirty = False
     out = {}
     for job_key, info in slurm_jobs.items():
-        job_id   = info["slurm_job_id"]
-        cached   = info.get("status")
-        # Skip Slurm query if we already know the terminal state
-        if cached in _TERMINAL_STATES:
+        job_id = info.get("slurm_job_id")
+        cached = info.get("status")
+        # Jobs still in the Redis queue have no SLURM id yet
+        if not job_id or cached == "queued":
+            status = "queued"
+        elif cached in _TERMINAL_STATES:
             status = cached
         else:
-            raw    = _slurm_status(job_id)
+            raw    = _slurm_status(str(job_id))
             status = _SLURM_STATE_MAP.get(raw, "unknown")
             # sacct may be unreachable; fall back to checking output files
             if status == "unknown":
-                chembl_id = info.get("chembl_id", job_key)
-                ligand    = info.get("ligand")
                 pred_base = os.path.join(boltz_dir, job_key, "boltz_out",
                                          f"boltz_results_{job_key}", "predictions", job_key)
                 if os.path.isdir(pred_base) and glob.glob(os.path.join(pred_base, "*.cif")):
@@ -588,31 +711,46 @@ def boltz_download(request: Request):
         raise HTTPException(status_code=400, detail="task_id and chembl_id required")
 
     boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
-    manifest_path = f"{boltz_dir}/boltz_manifest.tsv"
-    if not os.path.exists(manifest_path):
-        raise HTTPException(status_code=404, detail="No Boltz jobs found for this task")
 
-    manifest = pd.read_csv(manifest_path, sep="\t")
-    rows = manifest[manifest["CHEMBL ID"] == chembl_id]
-    if ligand:
-        rows = rows[rows["Ligand"] == ligand]
-    if rows.empty:
-        raise HTTPException(status_code=404, detail=f"No Boltz jobs for {chembl_id}" + (f" / {ligand}" if ligand else ""))
+    # Collect matching job names from manifest (pre-generated jobs) and
+    # from .slurm_jobs.json (jobs submitted directly from the heatmap).
+    job_names = []
+
+    manifest_path = f"{boltz_dir}/boltz_manifest.tsv"
+    if os.path.exists(manifest_path):
+        manifest = pd.read_csv(manifest_path, sep="\t")
+        rows = manifest[manifest["CHEMBL ID"] == chembl_id]
+        if ligand:
+            rows = rows[rows["Ligand"] == ligand]
+        job_names.extend(rows["job"].tolist())
+
+    jobs_file = f"{boltz_dir}/.slurm_jobs.json"
+    if os.path.exists(jobs_file):
+        with open(jobs_file) as _jf:
+            slurm_jobs = json.load(_jf)
+        for jkey, info in slurm_jobs.items():
+            if info.get("chembl_id") == chembl_id:
+                if ligand is None or info.get("ligand") == ligand:
+                    if jkey not in job_names:
+                        job_names.append(jkey)
+
+    if not job_names:
+        raise HTTPException(status_code=404, detail=f"No Boltz results for {chembl_id}" + (f" / {ligand}" if ligand else ""))
 
     import io, zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for _, row in rows.iterrows():
-            job_name = row["job"]
+        for job_name in job_names:
             pred_dir = os.path.join(boltz_dir, job_name, "boltz_out",
                                     f"boltz_results_{job_name}", "predictions", job_name)
             if not os.path.isdir(pred_dir):
                 continue
-            for fpath in glob.glob(os.path.join(pred_dir, "*.cif")) + \
-                         glob.glob(os.path.join(pred_dir, "*.json")):
-                zf.write(fpath, arcname=f"{job_name}/{os.path.basename(fpath)}")
+            for fpath in glob.glob(os.path.join(pred_dir, "**", "*"), recursive=True):
+                if os.path.isfile(fpath):
+                    arcname = os.path.join(job_name, os.path.relpath(fpath, pred_dir))
+                    zf.write(fpath, arcname=arcname)
     buf.seek(0)
-    filename = f"boltz_{chembl_id}" + (f"_{ligand}" if ligand else "") + ".zip"
+    filename = f"boltz_{task_id}_{chembl_id}" + (f"_{ligand}" if ligand else "") + ".zip"
     return StreamingResponse(
         buf,
         media_type="application/zip",

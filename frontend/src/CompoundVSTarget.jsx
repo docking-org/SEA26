@@ -3,6 +3,11 @@ import { useSearchParams, Link } from 'react-router-dom';
 import Layout from './components/Layout';
 import 'altcha';
 
+// Mirrors Python sanitize() in generate_boltz_jobs.py
+function sanitize(name) {
+    return String(name).replace(/[^a-zA-Z0-9\-_.]/g, '_').replace(/^_+|_+$/g, '');
+}
+
 // Custom hook for responsive breakpoints
 function useWindowSize() {
     const [windowSize, setWindowSize] = useState({
@@ -101,12 +106,12 @@ export default function CompoundVsTarget() {
     const [boltzJobsByChembl, setBoltzJobsByChembl] = useState({}); // chemblId -> [job names]
     const [slurmJobs, setSlurmJobs] = useState({}); // chemblId -> { slurm_job_id, status }
     const [slurmSubmitting, setSlurmSubmitting] = useState({}); // chemblId -> bool
+    const [heatmapSubmitting, setHeatmapSubmitting] = useState({}); // jobKey -> bool
     const [selectedBoltzJob, setSelectedBoltzJob] = useState(''); // full job name e.g. "CHEMBL123__LigandName"
     const altchaRef = useRef(null);
     const [altchaPayload, setAltchaPayload] = useState(null);
     const [altchaVerified, setAltchaVerified] = useState(false);
     const rightColumnRef = useRef(null);
-    const [rightColumnHeight, setRightColumnHeight] = useState(null);
     const heatmapRef = useRef(null);
     const { width: windowWidth, height: windowHeight } = useWindowSize();
     
@@ -216,9 +221,21 @@ export default function CompoundVsTarget() {
         return { targets, hitsPerTarget, maxHits };
     }, [heatmapData]);
 
-    const getColorForScore = (score, hit, target) => {
+    const STATUS_RGB = {
+        queued:  [107, 114, 128],
+        pending: [217, 119, 6],
+        running: [37, 99, 235],
+        done: [22, 163, 74],
+        failed: [220, 38, 38],
+    };
+
+    const getColorForScore = (score, jobStatus) => {
         if (score === undefined) return '#ffffff';
         const intensity = Math.min(score, 1);
+        if (jobStatus && STATUS_RGB[jobStatus]) {
+            const [r, g, b] = STATUS_RGB[jobStatus];
+            return `rgb(${Math.round(r * intensity + 255 * (1 - intensity))}, ${Math.round(g * intensity + 255 * (1 - intensity))}, ${Math.round(b * intensity + 255 * (1 - intensity))})`;
+        }
         const gray = Math.round(255 * (1 - intensity));
         return `rgb(${gray}, ${gray}, ${gray})`;
     };
@@ -418,6 +435,42 @@ export default function CompoundVsTarget() {
         }
     }
 
+    async function submitSlurmFromHeatmap(chemblId, ligandName, smiles) {
+        const jobKey = `${sanitize(chemblId)}__${sanitize(ligandName)}`;
+        setHeatmapSubmitting(prev => ({ ...prev, [jobKey]: true }));
+        try {
+            const resp = await fetch('/api/boltz_submit_from_heatmap', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    task_id: taskId,
+                    chembl_id: chemblId,
+                    smiles,
+                    ligand_name: ligandName,
+                    altcha: altchaPayload,
+                }),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                setSlurmJobs(prev => ({
+                    ...prev,
+                    [data.job_key]: {
+                        slurm_job_id: null,
+                        chembl_id: chemblId,
+                        ligand: ligandName,
+                        status: 'queued',
+                    },
+                }));
+            } else {
+                alert(`Boltz2 submission failed: ${data.detail || 'unknown error'}`);
+            }
+        } catch (err) {
+            alert(`Boltz2 submission error: ${err.message}`);
+        } finally {
+            setHeatmapSubmitting(prev => ({ ...prev, [jobKey]: false }));
+        }
+    }
+
     useEffect(() => {
         if (taskId) {
             fetchHeatMapData();
@@ -475,17 +528,6 @@ export default function CompoundVsTarget() {
         console.log("heatmapData updated:", heatmapData);
     }, [heatmapData]);
 
-    useEffect(() => {
-        const el = rightColumnRef.current;
-        if (!el) return;
-        const observer = new ResizeObserver(entries => {
-            for (const entry of entries) {
-                setRightColumnHeight(entry.contentRect.height);
-            }
-        });
-        observer.observe(el);
-        return () => observer.disconnect();
-    }, []);
 
     // Estimate the width of the longest target label
     const targetLabelWidth = useMemo(() => {
@@ -514,10 +556,8 @@ export default function CompoundVsTarget() {
             Math.floor(availableWidth / tableData.maxHits)
         );
 
-        // Calculate height so all rows together match the right column stack height
-        const availableHeight = (!isMobile && rightColumnHeight)
-            ? rightColumnHeight
-            : windowHeight - (isMobile ? 250 : 350);
+        // Calculate height so all rows fit within the viewport
+        const availableHeight = windowHeight - (isMobile ? 250 : 350);
         const calculatedHeight = Math.max(
             isMobile ? 10 : 12,
             Math.floor(availableHeight / tableData.targets.length)
@@ -527,7 +567,7 @@ export default function CompoundVsTarget() {
             width: calculatedWidth,
             height: calculatedHeight
         };
-    }, [tableData, isMobile, isTablet, windowWidth, windowHeight, targetLabelWidth, rightColumnHeight]);
+    }, [tableData, isMobile, isTablet, windowWidth, windowHeight, targetLabelWidth]);
 
     // Responsive molecule image sizes
     const moleculeSize = useMemo(() => {
@@ -658,6 +698,8 @@ export default function CompoundVsTarget() {
                                                     lockedTooltip.hitId === hit?.id &&
                                                     lockedTooltip.target === target;
                                                 const isFocused = focusedCell.row === rowIndex && focusedCell.col === colIndex;
+                                                const hitJobKey = hit ? `${sanitize(target.split(':')[0])}__${sanitize(hit.id)}` : null;
+                                                const hitJobStatus = hitJobKey ? slurmJobs[hitJobKey]?.status : null;
                                                 return (
                                                     <td
                                                         key={colIndex}
@@ -665,7 +707,7 @@ export default function CompoundVsTarget() {
                                                         onMouseLeave={isDesktop ? handleMouseLeave : undefined}
                                                         onClick={(e) => handleCellClick(e, target, hit)}
                                                         style={{
-                                                            backgroundColor: getColorForScore(hit?.score, hit, target),
+                                                            backgroundColor: getColorForScore(hit?.score, hitJobStatus),
                                                             minWidth: `${cellSize.width}px`,
                                                             width: `${cellSize.width}px`,
                                                             height: `${cellSize.height}px`,
@@ -887,147 +929,95 @@ export default function CompoundVsTarget() {
                                 </div>
                             )}
                         </div>{/* end molecules side-by-side */}
-                    </div>{/* end white molecule card */}
-                    </div>{/* end sticky wrapper */}
 
-                    {/* Boltz-2 Structure Prediction Card */}
-                    <div style={{
-                        backgroundColor: 'white',
-                        border: '1px solid #e0e0e0',
-                        borderRadius: '8px',
-                        padding: isMobile ? '16px' : '20px',
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
-                    }}>
-                        <h3 style={{ margin: '0 0 16px 0', fontSize: '16px', fontWeight: '600', color: '#1a1a1a' }}>
-                            Boltz-2 Structure Prediction
-                        </h3>
+                        {/* Submit to Boltz2 — only when cell is locked */}
+                        {lockedTooltip && heatmapData && (() => {
+                            const chemblId   = lockedTooltip.target.split(':')[0];
+                            const targetName = lockedTooltip.target.split(':')[1] || chemblId;
 
-                        {/* Step 1: Generate jobs */}
-                        <div style={{ marginBottom: '16px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                                <button
-                                    onClick={submitBoltz}
-                                    disabled={boltzStatus === 'loading'}
-                                    className="px-4 py-2 bg-teal-600 text-white rounded hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-                                >
-                                    {boltzStatus === 'loading' ? 'Generating...' : 'Generate Boltz Jobs'}
-                                </button>
-                                {boltzStatus === 'success' && (
-                                    <span style={{ color: '#16a34a', fontSize: '13px' }}>{boltzMessage}</span>
-                                )}
-                                {boltzStatus === 'error' && (
-                                    <span style={{ color: '#dc2626', fontSize: '13px' }}>{boltzMessage}</span>
-                                )}
-                            </div>
-                        </div>
+                            const makeBoltzButton = (ligandName, smiles, label) => {
+                                const jobKey   = `${sanitize(chemblId)}__${sanitize(ligandName)}`;
+                                const existing = slurmJobs[jobKey];
+                                const submitting = heatmapSubmitting[jobKey];
 
-                        {/* Step 2: Select job, verify captcha, and submit */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                            {Object.keys(boltzJobsByChembl).length > 0 && (
-                                <select
-                                    value={selectedBoltzJob}
-                                    onChange={e => setSelectedBoltzJob(e.target.value)}
-                                    style={{
-                                        padding: '6px 10px',
-                                        border: '1px solid #d1d5db',
-                                        borderRadius: '6px',
-                                        fontSize: '13px',
-                                        color: '#374151',
-                                        backgroundColor: 'white',
-                                        maxWidth: '320px'
-                                    }}
-                                >
-                                    <option value="">Select a Boltz-2 job...</option>
-                                    {Object.entries(boltzJobsByChembl).flatMap(([chemblId, jobs]) =>
-                                        jobs.map(jobName => {
-                                            const sep = jobName.indexOf('__');
-                                            const ligand = sep !== -1 ? jobName.slice(sep + 2) : null;
-                                            const label = ligand ? `${chemblId} / ${ligand}` : chemblId;
-                                            return <option key={jobName} value={jobName}>{label}</option>;
-                                        })
-                                    )}
-                                </select>
-                            )}
-
-                            {!altchaDisabled && (
-                                <div>
-                                    <altcha-widget
-                                        ref={altchaRef}
-                                        challenge="/api/captcha/challenge"
-                                    ></altcha-widget>
-                                </div>
-                            )}
-
-                            {selectedBoltzJob && (() => {
-                                const sep = selectedBoltzJob.indexOf('__');
-                                const chemblId = sep !== -1 ? selectedBoltzJob.slice(0, sep) : selectedBoltzJob;
-                                const ligand = sep !== -1 ? selectedBoltzJob.slice(sep + 2) : null;
-                                const slurmInfo = slurmJobs[selectedBoltzJob] ?? slurmJobs[chemblId];
-                                const isSubmitting = !!slurmSubmitting[selectedBoltzJob];
-                                const status = slurmInfo?.status;
-
-                                if (status === 'done') {
+                                if (existing?.status === 'done') {
                                     return (
-                                        <a
-                                            href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}${ligand ? `&ligand=${encodeURIComponent(ligand)}` : ''}`}
-                                            style={{
-                                                display: 'inline-block',
-                                                padding: '6px 16px',
-                                                backgroundColor: '#6366f1',
-                                                color: 'white',
-                                                borderRadius: '6px',
-                                                textDecoration: 'none',
-                                                fontSize: '13px',
-                                                fontWeight: '500'
-                                            }}
-                                        >
-                                            ↓ Download Results
-                                        </a>
+                                        <div key={jobKey} style={{ marginBottom: '8px' }}>
+                                            <a
+                                                href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}&ligand=${encodeURIComponent(ligandName)}`}
+                                                style={{ color: '#4f46e5', fontWeight: '600', fontSize: '13px' }}
+                                            >
+                                                Download {label} results
+                                            </a>
+                                        </div>
                                     );
                                 }
 
-                                let btnLabel = 'Submit to SLURM';
-                                let btnColor = '#0d9488';
-                                let btnDisabled = !altchaVerified;
+                                const btnLabel = submitting ? 'Submitting…'
+                                    : existing?.status === 'queued'  ? 'Queued — waiting for slot'
+                                    : existing?.status === 'pending' ? `Pending #${existing.slurm_job_id}`
+                                    : existing?.status === 'running' ? `Running #${existing.slurm_job_id}`
+                                    : existing?.status === 'failed'  ? 'Failed — retry?'
+                                    : `Submit ${label} × ${targetName}`;
 
-                                if (isSubmitting) {
-                                    btnLabel = 'Submitting…';
-                                    btnDisabled = true;
-                                } else if (status === 'pending') {
-                                    btnLabel = `Pending #${slurmInfo.slurm_job_id}`;
-                                    btnColor = '#d97706';
-                                    btnDisabled = true;
-                                } else if (status === 'running') {
-                                    btnLabel = `Running #${slurmInfo.slurm_job_id}`;
-                                    btnColor = '#2563eb';
-                                    btnDisabled = true;
-                                } else if (status === 'failed') {
-                                    btnLabel = 'Failed — retry?';
-                                    btnColor = '#dc2626';
-                                    btnDisabled = !altchaVerified;
-                                }
+                                const btnColor = existing?.status === 'queued'  ? '#6b7280'
+                                    : existing?.status === 'pending' ? '#d97706'
+                                    : existing?.status === 'running' ? '#2563eb'
+                                    : existing?.status === 'failed'  ? '#dc2626'
+                                    : '#0d9488';
+
+                                const btnDisabled = submitting
+                                    || existing?.status === 'queued'
+                                    || existing?.status === 'pending'
+                                    || existing?.status === 'running'
+                                    || (!altchaVerified);
 
                                 return (
-                                    <button
-                                        onClick={btnDisabled ? undefined : () => submitSlurmJob(chemblId, ligand)}
-                                        disabled={btnDisabled}
-                                        style={{
-                                            padding: '6px 16px',
-                                            backgroundColor: btnDisabled ? '#9ca3af' : btnColor,
-                                            color: 'white',
-                                            border: 'none',
-                                            borderRadius: '6px',
-                                            fontSize: '13px',
-                                            fontWeight: '500',
-                                            cursor: btnDisabled ? 'not-allowed' : 'pointer',
-                                        }}
-                                    >
-                                        {btnLabel}
-                                    </button>
+                                    <div key={jobKey} style={{ marginBottom: '8px' }}>
+                                        <button
+                                            disabled={btnDisabled}
+                                            onClick={() => submitSlurmFromHeatmap(chemblId, ligandName, smiles)}
+                                            style={{
+                                                width: '100%',
+                                                padding: '8px 14px',
+                                                backgroundColor: btnDisabled ? '#e5e7eb' : btnColor,
+                                                color: btnDisabled ? '#9ca3af' : 'white',
+                                                border: 'none',
+                                                borderRadius: '6px',
+                                                cursor: btnDisabled ? 'not-allowed' : 'pointer',
+                                                fontWeight: '600',
+                                                fontSize: '13px',
+                                            }}
+                                            title={!altchaVerified ? 'Complete the CAPTCHA below first' : ''}
+                                        >
+                                            {btnLabel}
+                                        </button>
+                                    </div>
                                 );
-                            })()}
-                        </div>
-                    </div>{/* end Boltz card */}
+                            };
+
+                            return (
+                                <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #eee' }}>
+                                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '6px', fontWeight: '600' }}>
+                                        Submit to Boltz2 vs {targetName}
+                                    </div>
+                                    {makeBoltzButton(heatmapData.Name, heatmapData.SMILES, `Query (${heatmapData.Name})`)}
+                                    {lockedTooltip.hitSmiles && lockedTooltip.score < 1 && makeBoltzButton(
+                                        lockedTooltip.hitId,
+                                        lockedTooltip.hitSmiles,
+                                        `Known Hit (${lockedTooltip.hitId})`
+                                    )}
+                                    {!altchaVerified && !altchaDisabled && (
+                                        <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', textAlign: 'center' }}>
+                                            Complete the CAPTCHA in the Boltz section below first
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                    </div>{/* end white molecule card */}
+                    </div>{/* end sticky wrapper */}
 
                     {/* Submitted SLURM jobs table */}
                     {Object.keys(slurmJobs).length > 0 && (
