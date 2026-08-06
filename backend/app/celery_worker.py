@@ -391,7 +391,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                     "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
                 })
                 best_similarity = best_similarity.sort_values(by=["Tanimoto_Coefficient"], ascending=False, ignore_index=True)
-                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= os.getenv("TC_CUTOFF", 0.28)]
+                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= float(os.getenv("TC_CUTOFF", "0.28"))]
                 best_similarity.to_csv(f"{save_folder}/best_similar_{target_cid}.tsv", sep="\t", index=False)
 
                 # Top 10 similarity matrix — use argpartition instead of full sort
@@ -555,7 +555,7 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
     best_similarity["Tanimoto_Coefficient"] = list(result.max(axis = 1))
     best_similarity["Known_Hit_SMILES"] = [known.loc["{}".format(name), "canonical_smiles"] for name in result.idxmax(axis = "columns")] 
     best_similarity = best_similarity.sort_values(by = ["Tanimoto_Coefficient"], ascending = False, ignore_index = True)
-    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.28]
+    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= float(os.getenv("TC_CUTOFF", "0.28"))]
     best_similarity.to_csv(f"{save_folder}/best_similar_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
     
     # get top 10 similarity matrix
@@ -686,6 +686,110 @@ def drain_boltz_queue():
         r.delete(lock_key)
 
 
+@celery.task(name="boltz.update_status")
+def update_boltz_status():
+    """Periodically scan all .slurm_jobs.json files and update job statuses via squeue + output files."""
+    import subprocess, glob as _glob, json as _json
+
+    lock_key = "boltz_status_lock"
+    lock_ttl = 60
+    acquired = r.set(lock_key, "1", nx=True, ex=lock_ttl)
+    if not acquired:
+        return
+
+    try:
+        job_dir_base = os.getenv("SEA_JOB_DIR", "")
+        if not job_dir_base:
+            return
+
+        # Fetch all active SLURM jobs in one call
+        try:
+            import pwd as _pwd
+            username = _pwd.getpwuid(os.getuid()).pw_name
+        except (KeyError, ImportError):
+            username = str(os.getuid())
+
+        sq = subprocess.run(
+            ["squeue", "--noheader", "--format=%i %T", f"--user={username}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        squeue_ok = sq.returncode == 0
+        active_jobs = {}  # job_id -> SLURM state string
+        if squeue_ok:
+            for line in sq.stdout.strip().splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    active_jobs[parts[0]] = parts[1]
+
+        _STATE_MAP = {
+            "PENDING": "pending", "CONFIGURING": "pending",
+            "RUNNING": "running", "COMPLETING": "running",
+            "COMPLETED": "done",
+            "FAILED": "failed", "CANCELLED": "failed", "TIMEOUT": "failed",
+            "OUT_OF_MEMORY": "failed",
+        }
+        _TERMINAL = {"done", "failed"}
+
+        for jobs_file in _glob.glob(f"{job_dir_base}/*/boltz_jobs/.slurm_jobs.json"):
+            boltz_dir = os.path.dirname(jobs_file)
+            try:
+                with open(jobs_file) as _f:
+                    slurm_jobs = _json.load(_f)
+            except Exception:
+                continue
+
+            dirty = False
+            for job_key, info in slurm_jobs.items():
+                if info.get("status") in _TERMINAL:
+                    continue
+                job_id = info.get("slurm_job_id")
+                if not job_id or info.get("status") == "queued":
+                    continue
+
+                str_job_id = str(job_id)
+
+                if squeue_ok and str_job_id in active_jobs:
+                    new_status = _STATE_MAP.get(active_jobs[str_job_id], "unknown")
+                    # Clear stale missing_since if job reappears (shouldn't happen, but be safe)
+                    if "missing_since" in slurm_jobs[job_key]:
+                        del slurm_jobs[job_key]["missing_since"]
+                        dirty = True
+                elif squeue_ok and str_job_id not in active_jobs:
+                    # Job has left the queue — check output files first
+                    pred_base = os.path.join(boltz_dir, job_key, "boltz_out",
+                                             f"boltz_results_{job_key}", "predictions", job_key)
+                    if os.path.isdir(pred_base) and _glob.glob(os.path.join(pred_base, "*.cif")):
+                        new_status = "done"
+                    else:
+                        # No output yet — use a grace period before marking failed,
+                        # because the filesystem may still be flushing output files.
+                        from datetime import datetime as _dt
+                        missing_since = info.get("missing_since")
+                        if missing_since is None:
+                            slurm_jobs[job_key]["missing_since"] = _dt.utcnow().isoformat()
+                            dirty = True
+                            continue
+                        elapsed = (_dt.utcnow() - _dt.fromisoformat(missing_since)).total_seconds()
+                        if elapsed < 300:  # 5-minute grace period
+                            continue
+                        new_status = "failed"
+                else:
+                    # squeue unavailable — skip to avoid false negatives
+                    continue
+
+                if new_status in _TERMINAL and info.get("status") != new_status:
+                    slurm_jobs[job_key]["status"] = new_status
+                    slurm_jobs[job_key].pop("missing_since", None)
+                    dirty = True
+                    print(f"update_boltz_status: {job_key} → {new_status}")
+
+            if dirty:
+                with open(jobs_file, "w") as _f:
+                    _json.dump(slurm_jobs, _f)
+    finally:
+        r.delete(lock_key)
+
+
 celery.conf.beat_schedule = {
     'daily-cleanup-task': {
         'task': 'main.cleanup_task',
@@ -694,6 +798,10 @@ celery.conf.beat_schedule = {
     'drain-boltz-queue': {
         'task': 'boltz.drain_queue',
         'schedule': 30.0,  # every 30 seconds
+    },
+    'update-boltz-status': {
+        'task': 'boltz.update_status',
+        'schedule': 60.0,  # every 60 seconds
     },
 }
 
