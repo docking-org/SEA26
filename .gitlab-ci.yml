@@ -7,6 +7,7 @@ deploy production:
   variables:
     CI_PROJECT_NAME: sea25
   script:
+    - printenv | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -v "^CI_\|^GITLAB_\|^FF_\|^PATH=" > .env
     - docker compose -f compose.prod.yml build --build-arg GIT_TOKEN="${GIT_TOKEN}" --build-arg VITE_CHEMBL_VERSION="${VITE_CHEMBL_VERSION}"
     - docker compose -f compose.prod.yml down || true
     - docker compose -f compose.prod.yml up -d
@@ -21,7 +22,6 @@ deploy development:
     CI_PROJECT_NAME: sea25-dev
   script:
     - printenv | grep -E "^[A-Za-z_][A-Za-z0-9_]*=" | grep -v "^CI_\|^GITLAB_\|^FF_\|^PATH=" > .env
-    - unset ALTCHA_HMAC_SECRET
     - docker compose -f compose.dev.yml build --build-arg GIT_TOKEN="${GIT_TOKEN}" --build-arg VITE_CHEMBL_VERSION="${VITE_CHEMBL_VERSION}"
     - docker compose -f compose.dev.yml down || true
     - docker compose -f compose.dev.yml up -d
