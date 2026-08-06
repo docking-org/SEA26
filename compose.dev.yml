@@ -28,9 +28,8 @@ services:
     restart: unless-stopped
     networks:
       - ocean
-    environment:
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    env_file:
+      - .env
     depends_on:
       redis:
         condition: service_healthy
@@ -51,23 +50,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    env_file:
+      - .env
     ports:
       - "5055:5055"
-    environment:
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
-      - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
-      - SEA_JOB_DIR=${SEA_JOB_DIR}
-      - ALTCHA_HMAC_SECRET=${ALTCHA_HMAC_SECRET}
-      - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE}
-      - VITE_CHEMBL_VERSION=${VITE_CHEMBL_VERSION}
-      - SLURM_PARTITION=${SLURM_PARTITION}
-      - SLURM_NODELIST=${SLURM_NODELIST}
-      - SLURM_ACCOUNT=${SLURM_ACCOUNT}
-      - SLURM_QOS=${SLURM_QOS}
-      - SLURM_TIME=${SLURM_TIME}
-      - SLURM_GPUS=${SLURM_GPUS}
-      - BOLTZ_BIN=${BOLTZ_BIN}
     command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5055 --reload
     volumes:
       - ./backend:/home/sea/backend
@@ -103,11 +89,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-    environment:
-      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
-      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
-      - SEA_JOB_DIR=${SEA_JOB_DIR}
-      - SEA_DATA_FOLDER=${SEA_DATA_FOLDER}
+    env_file:
+      - .env
     command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=info --concurrency=10 --max-tasks-per-child=10
     volumes:
       - ./backend:/home/sea/backend

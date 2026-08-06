@@ -346,7 +346,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
     <Layout>
         {bannerVisible && (
           <div className="bg-teal-400 backdrop-blur-sm text-teal-950 px-4 py-3 text-center text-lg relative rounded-t-lg -mx-6 -mt-6 mb-6 border-b border-white/20">
-            <span>SEA has been updated to ChEMBL {import.meta.env.VITE_CHEMBL_VERSION} for improved prediction accuracy. The previous version remains available <a target="_blank" href="https://seadev.docking.org" className="underline hover:text-teal-200">here</a>.</span>
+            <span>SEA has been updated to ChEMBL {import.meta.env.VITE_CHEMBL_VERSION} for improved prediction accuracy. The previous version remains available <a target="_blank" href="https://sea16.docking.org" className="underline hover:text-teal-200">here</a>.</span>
             <button
               onClick={() => setBannerVisible(false)}
               className="absolute right-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white text-lg leading-none cursor-pointer"

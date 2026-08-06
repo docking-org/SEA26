@@ -509,6 +509,19 @@ export default function CompoundVsTarget() {
         return () => widget.removeEventListener('statechange', handleStateChange);
     }, []);
 
+    function handleJobRowHover(chemblId, ligandId) {
+        if (!tableData) return;
+        const rowIndex = tableData.targets.findIndex(t => t.split(':')[0] === chemblId);
+        if (rowIndex === -1) return;
+        const colIndex = tableData.hitsPerTarget[tableData.targets[rowIndex]].findIndex(h => h.id === ligandId);
+        if (colIndex === -1) return;
+        setFocusedCell({ row: rowIndex, col: colIndex });
+    }
+
+    function handleJobRowLeave() {
+        setFocusedCell({ row: -1, col: -1 });
+    }
+
     // Poll SLURM status every 30 s while any job is active
     useEffect(() => {
         const hasActive = Object.values(slurmJobs).some(
@@ -1020,48 +1033,63 @@ export default function CompoundVsTarget() {
                     </div>{/* end sticky wrapper */}
 
                     {/* Submitted SLURM jobs table */}
-                    {Object.keys(slurmJobs).length > 0 && (
-                        <div style={{ marginTop: '16px' }}>
-                            <div style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>Submitted Jobs</div>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                                <thead>
-                                    <tr style={{ backgroundColor: '#f3f4f6' }}>
-                                        <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Target</th>
-                                        <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Ligand</th>
-                                        <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Job ID</th>
-                                        <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Status</th>
-                                        <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {Object.entries(slurmJobs).map(([jobKey, info], i) => {
-                                        const statusColors = { pending: '#d97706', running: '#2563eb', done: '#16a34a', failed: '#dc2626' };
-                                        const color = statusColors[info.status] || '#6b7280';
-                                        return (
-                                            <tr key={jobKey} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f9fafb' }}>
-                                                <td style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb', color: '#374151' }}>{info.chembl_id}</td>
-                                                <td style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb', color: '#374151' }}>{info.ligand || '—'}</td>
-                                                <td style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb', color: '#6b7280', fontFamily: 'monospace' }}>{info.slurm_job_id || '—'}</td>
-                                                <td style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb' }}>
-                                                    <span style={{ color, fontWeight: '500' }}>{info.status}</span>
-                                                </td>
-                                                <td style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb' }}>
-                                                    {info.status === 'done' && (
-                                                        <a
-                                                            href={`/api/boltz_download?task_id=${taskId}&chembl_id=${info.chembl_id}${info.ligand ? `&ligand=${encodeURIComponent(info.ligand)}` : ''}`}
-                                                            style={{ color: '#6366f1', textDecoration: 'underline' }}
-                                                        >
-                                                            Download
-                                                        </a>
-                                                    )}
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
+                    {Object.keys(slurmJobs).length > 0 && (() => {
+                        const jobsByTarget = Object.entries(slurmJobs).reduce((acc, [jobKey, info]) => {
+                            const target = info.chembl_id || '—';
+                            if (!acc[target]) acc[target] = [];
+                            acc[target].push([jobKey, info]);
+                            return acc;
+                        }, {});
+                        const statusColors = { pending: '#d97706', running: '#2563eb', done: '#16a34a', failed: '#dc2626', queued: '#6b7280' };
+                        return (
+                            <div style={{ marginTop: '16px' }}>
+                                <div style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>Submitted Jobs</div>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                    <thead>
+                                        <tr style={{ backgroundColor: '#f3f4f6' }}>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Target</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Ligand</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Job ID</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Status</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {Object.entries(jobsByTarget).map(([target, jobs]) => (
+                                            jobs.map(([jobKey, info], i) => {
+                                                const color = statusColors[info.status] || '#6b7280';
+                                                const isLast = i === jobs.length - 1;
+                                                return (
+                                                    <tr key={jobKey} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f9fafb' }} onMouseEnter={() => handleJobRowHover(info.chembl_id, info.ligand)} onMouseLeave={handleJobRowLeave}>
+                                                        {i === 0 && (
+                                                            <td rowSpan={jobs.length} style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', color: '#374151', fontWeight: '600', verticalAlign: 'middle' }}>
+                                                                {target}
+                                                            </td>
+                                                        )}
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#374151' }}>{info.ligand || '—'}</td>
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#6b7280', fontFamily: 'monospace' }}>{info.slurm_job_id || '—'}</td>
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb' }}>
+                                                            <span style={{ color, fontWeight: '500' }}>{info.status}</span>
+                                                        </td>
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb' }}>
+                                                            {info.status === 'done' && (
+                                                                <a
+                                                                    href={`/api/boltz_download?task_id=${taskId}&chembl_id=${info.chembl_id}${info.ligand ? `&ligand=${encodeURIComponent(info.ligand)}` : ''}`}
+                                                                    style={{ color: '#6366f1', textDecoration: 'underline' }}
+                                                                >
+                                                                    Download
+                                                                </a>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        );
+                    })()}
 
                 </div>{/* end right column */}
             </div>{/* end main two-column row */}

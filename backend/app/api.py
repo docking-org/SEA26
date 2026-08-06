@@ -146,8 +146,6 @@ async def _submit_sea_job(task_id: str, input_data: dict):
     import time
     start = time.time()
     try:
-        # job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
-        # _mkdir_(job_dir)
         smiles_test = [
             f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}"
             for x in input_data.splitlines()
@@ -185,7 +183,6 @@ async def _submit_sea_job(task_id: str, input_data: dict):
         redis_cache.setex(smiles_key, 3600, pickle.dumps(smiles_test))
 
         # Chunk targets into batches to reduce broker round-trips
-        # 5821 targets / 100 = ~59 tasks instead of 5821
         CHUNK_SIZE = 100
         target_chunks = [list_chembl[i:i + CHUNK_SIZE] for i in range(0, len(list_chembl), CHUNK_SIZE)]
 
@@ -287,7 +284,7 @@ def get_recent_tasks():
             "status": progress.get("status", "UNKNOWN") if progress else "UNKNOWN",
         }
         recent_tasks.append(task_info)
-    # sort by time_stamp descending
+    # Sort by time_stamp descending
     recent_tasks = sorted(recent_tasks, key=lambda x: x['time_stamp'], reverse=True)
     return {"recent_tasks": recent_tasks}
 
@@ -475,12 +472,12 @@ async def boltz_submit_slurm(request: Request):
     script_tag = f"{chembl_id}__{ligand}" if ligand else chembl_id
 
     # Build sbatch wrapper that calls each existing run.sh sequentially
-    nodelist  = os.getenv("SLURM_NODELIST", "epyc-A40")
-    partition = os.getenv("SLURM_PARTITION", "gpu.q")
-    account   = os.getenv("SLURM_ACCOUNT", "")
-    qos       = os.getenv("SLURM_QOS", "")
-    time_     = os.getenv("SLURM_TIME", "01:00:00")
-    gpus      = os.getenv("SLURM_GPUS", "NVIDIA-A40:1")
+    nodelist  = os.getenv("SLURM_NODELIST")
+    partition = os.getenv("SLURM_PARTITION")
+    account   = os.getenv("SLURM_ACCOUNT")
+    qos       = os.getenv("SLURM_QOS")
+    time_     = os.getenv("SLURM_TIME")
+    gpus      = os.getenv("SLURM_GPUS")
 
     lines = [
         "#!/usr/bin/env bash",
@@ -488,10 +485,6 @@ async def boltz_submit_slurm(request: Request):
         f"#SBATCH --partition={partition}",
         f"#SBATCH --nodelist={nodelist}",
     ]
-    if account:
-        lines.append(f"#SBATCH --account={account}")
-    if qos:
-        lines.append(f"#SBATCH --qos={qos}")
     lines += [
         f"#SBATCH --time={time_}",
         f"#SBATCH --gres=gpu:{gpus}",
