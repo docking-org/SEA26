@@ -1,6 +1,7 @@
 import os
 import sys
 import glob
+import ipaddress
 import shutil
 import uuid
 import json
@@ -755,6 +756,35 @@ def warm_cache():
     """Trigger Redis cache warming for target files."""
     task = warm_target_cache.delay()
     return {"message": "Cache warming started", "task_id": task.id}
+
+_DEFAULT_INTERNAL_SUBNETS = [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "::1/128",
+]
+
+def _get_internal_subnets() -> list[ipaddress.ip_network]:
+    raw = os.getenv("INTERNAL_SUBNETS")
+    subnets = [s.strip() for s in raw.split(",")] if raw else _DEFAULT_INTERNAL_SUBNETS
+    return [ipaddress.ip_network(s, strict=False) for s in subnets]
+
+def _is_internal_ip(ip_str: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return any(addr in net for net in _get_internal_subnets())
+    except ValueError:
+        return False
+
+@router.get("/is_internal")
+def is_internal(request: Request):
+    """Return whether the client IP is from an internal subnet."""
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    return {"internal": _is_internal_ip(client_ip)}
 
 @router.get("/cache_info")
 def cache_info():

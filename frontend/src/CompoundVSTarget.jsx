@@ -480,6 +480,14 @@ export default function CompoundVsTarget() {
     }, [taskId]);
 
     const [altchaDisabled, setAltchaDisabled] = useState(false);
+    const [isInternal, setIsInternal] = useState(false);
+
+    useEffect(() => {
+        fetch('/api/is_internal')
+            .then(r => r.json())
+            .then(data => setIsInternal(!!data.internal))
+            .catch(() => setIsInternal(false));
+    }, []);
 
     useEffect(() => {
         fetch('/api/captcha/challenge')
@@ -943,8 +951,8 @@ export default function CompoundVsTarget() {
                             )}
                         </div>{/* end molecules side-by-side */}
 
-                        {/* Submit to Boltz2 — only when cell is locked */}
-                        {lockedTooltip && heatmapData && (() => {
+                        {/* Submit to Boltz2 — only for internal users when cell is locked */}
+                        {isInternal && lockedTooltip && heatmapData && (() => {
                             const chemblId   = lockedTooltip.target.split(':')[0];
                             const targetName = lockedTooltip.target.split(':')[1] || chemblId;
 
@@ -1033,7 +1041,7 @@ export default function CompoundVsTarget() {
                     </div>{/* end sticky wrapper */}
 
                     {/* Submitted SLURM jobs table */}
-                    {Object.keys(slurmJobs).length > 0 && (() => {
+                    {isInternal && Object.keys(slurmJobs).length > 0 && (() => {
                         const jobsByTarget = Object.entries(slurmJobs).reduce((acc, [jobKey, info]) => {
                             const target = info.chembl_id || '—';
                             if (!acc[target]) acc[target] = [];
