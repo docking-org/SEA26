@@ -720,7 +720,7 @@ export default function CompoundVsTarget() {
                                                     lockedTooltip.target === target;
                                                 const isFocused = focusedCell.row === rowIndex && focusedCell.col === colIndex;
                                                 const hitJobKey = hit ? `${sanitize(target.split(':')[0])}__${sanitize(hit.id)}` : null;
-                                                const hitJobStatus = hitJobKey ? slurmJobs[hitJobKey]?.status : null;
+                                                const hitJobStatus = isInternal && hitJobKey ? slurmJobs[hitJobKey]?.status : null;
                                                 return (
                                                     <td
                                                         key={colIndex}
