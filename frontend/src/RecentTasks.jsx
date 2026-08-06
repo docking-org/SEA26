@@ -3,13 +3,15 @@ import Layout from "./components/Layout";
 
 export default function RecentTasks() {
     const [tasks, setTasks] = useState([]);
+    const [loading, setLoading] = useState(true);
 
     function fetchRecentTasks() {
         // Fetch recent tasks from backend API
         fetch('/api/recent_tasks')
             .then(response => response.json())
             .then(data => setTasks(data.recent_tasks))
-            .catch(error => console.error('Error fetching recent tasks:', error));
+            .catch(error => console.error('Error fetching recent tasks:', error))
+            .finally(() => setLoading(false));
     }
 
     useEffect(() => {
@@ -22,6 +24,11 @@ export default function RecentTasks() {
         <Layout>
         <div className="px-2 sm:px-0">
             <h1 className="text-xl sm:text-2xl font-bold mb-4">Recent Tasks</h1>
+            {loading ? (
+                <div className="flex items-center justify-center py-12">
+                    <div className="w-8 h-8 border-4 border-teal-600 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+            ) : (
                 <div className="overflow-x-auto">
                     <table className="min-w-full bg-white text-gray-950 border-white/20 rounded-lg">
                         <thead>
@@ -55,8 +62,9 @@ export default function RecentTasks() {
                         </tbody>
                     </table>
                 </div>
-                </div>
-            </Layout>
+            )}
+        </div>
+        </Layout>
      
     );
     }

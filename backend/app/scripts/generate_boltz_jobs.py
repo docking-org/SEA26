@@ -3,7 +3,7 @@ import os
 import sys
 import shlex
 import string
-from alive_progress import alive_bar
+from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
@@ -78,13 +78,14 @@ def read_targets(result_dir) :
 	'''
 	sea_file = os.path.join(result_dir, "sea_result.tsv")
 	if not os.path.exists(sea_file) :
-		sys.exit("Error: {} not found".format(sea_file))
+		raise RuntimeError("Error: {} not found".format(sea_file))
 
-	targets = pd.read_csv(sea_file, sep = "\t", index_col = 0)
+	targets = pd.read_csv(sea_file, sep = "\t")
 
-	for col in ["CHEMBL ID", "Sequence"] :
+	for col in ["Target_Chembl_ID", "Sequence"] :
+
 		if col not in targets.columns :
-			sys.exit("Error: column '{}' missing from {}. Re-run SEA with the "
+			raise RuntimeError("Error: column '{}' missing from {}. Re-run SEA with the "
 				"Uniprot / sequence annotation enabled.".format(col, sea_file))
 
 	## Drop targets without a real sequence -- nothing to cofold against
@@ -93,7 +94,7 @@ def read_targets(result_dir) :
 	targets = targets.reset_index(drop = True)
 
 	if targets.shape[0] == 0 :
-		sys.exit("Error: no high confidence targets with a sequence in {}".format(sea_file))
+		raise RuntimeError("Error: no high confidence targets with a sequence in {}".format(sea_file))
 
 	return targets
 
@@ -112,16 +113,24 @@ def read_ligands(result_dir, base, chembl_id, testFile, tc_min, top_n) :
 	Returns a DataFrame with columns Name, SMILES, Tc.
 	'''
 	best_file = os.path.join(result_dir, "best_similar_{}_{}.tsv".format(base, chembl_id))
+	if not os.path.exists(best_file) :
+		best_file = os.path.join(result_dir, "best_similar_{}.tsv".format(chembl_id))
 
+	use_fallback = True
 	if os.path.exists(best_file) :
-		ligands = pd.read_csv(best_file, sep = "\t", index_col = 0)
-		ligands = ligands.rename(columns = {"Tanimoto Coefficient" : "Tc"})
+		ligands = pd.read_csv(best_file, sep = "\t")
+		ligands = ligands.rename(columns = {"Tanimoto Coefficient" : "Tc", "Tanimoto_Coefficient" : "Tc"})
 		ligands = ligands[["Name", "SMILES", "Tc"]].copy()
 		ligands = ligands[ligands["Tc"] >= tc_min]
 		ligands = ligands.sort_values(by = ["Tc"], ascending = False, ignore_index = True)
-	else :
+		if ligands.shape[0] > 0 :
+			use_fallback = False
+
+	if use_fallback :
 		## Fallback: raw test file, "<SMILES> <Name>" per line, no Tc available
-		print("  Note: {} not found; falling back to {}".format(best_file, testFile))
+		## (triggered when best_similar doesn't exist or was filtered empty by the
+		## upstream Tc cutoff in the celery worker)
+		print("  Note: best_similar empty/absent for {}; falling back to {}".format(chembl_id, testFile))
 		rows = np.loadtxt(testFile, comments = None, dtype = str)
 		if rows.ndim == 1 : rows = rows.reshape(1, -1)
 		ligands = pd.DataFrame()
@@ -191,12 +200,12 @@ def build_chains(chembl_id, seq_rows, override, acc2seq, auto_complex) :
 		if isinstance(p, str) :
 			seq = acc2seq.get(p)
 			if seq is None :
-				sys.exit("Error: partner accession '{}' for {} not found in the "
+				raise RuntimeError("Error: partner accession '{}' for {} not found in the "
 					"lookup file".format(p, chembl_id))
 			add(seq, p)
 		else :
 			if "sequence" not in p :
-				sys.exit("Error: partner dict for {} needs a 'sequence' key".format(chembl_id))
+				raise RuntimeError("Error: partner dict for {} needs a 'sequence' key".format(chembl_id))
 			add(p["sequence"], p.get("label", "partner"), p.get("copies", 1))
 
 	return chains
@@ -254,7 +263,8 @@ def write_yaml(yaml_path, protein_chains, smiles, msa_mode, msa_dir, predict_aff
 
 def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa_mode = "server",
 		msa_dir = "msa", predict_affinity = True, boltz_out_dir = "boltz_out", boltz_extra_args = "",
-		lookup_file = "uniprot_chembl_id.tsv", stoich_overrides = {}, auto_complex = True) :
+		lookup_file = "uniprot_chembl_id.tsv", stoich_overrides = {}, auto_complex = True,
+		log_file = None, boltz_bin = "/nfs/home/khtang/.conda/envs/sea25/bin/boltz") :
 	'''
 	result_dir	str	SEA result folder (result_<base>/)
 	testFile	str	raw test SMILES file (ligand fallback)
@@ -273,6 +283,13 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 	For each high confidence target x ligand pair write an input YAML plus a
 	per-job run script.  Also emit a master run script and a job manifest.
 	'''
+	from datetime import datetime
+	def _log(msg) :
+		if log_file :
+			ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+			with open(log_file, "a") as _f :
+				_f.write(f"[{ts}] {msg}\n")
+
 	base    = os.path.basename(os.path.normpath(result_dir))
 	base    = base[len("result_") :] if base.startswith("result_") else base
 	targets = read_targets(result_dir)
@@ -285,92 +302,104 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 		acc2seq = dict(zip(lookup["uniprot_accession"].astype(str), lookup["sequence"].astype(str)))
 	elif any("partners" in (ov if ov else {}) and any(isinstance(p, str) for p in ov["partners"])
 			for ov in stoich_overrides.values()) :
-		sys.exit("Error: lookup file {} needed to resolve partner accessions".format(lookup_file))
+		raise RuntimeError("Error: lookup file {} needed to resolve partner accessions".format(lookup_file))
 
 	## Walk the high confidence targets and emit one job per target x ligand
-	chembl_ids  = pd.unique(targets["CHEMBL ID"].astype(str))
-	has_uniprot = "Uniprot ID"  in targets.columns
-	has_name    = "Target name" in targets.columns
+	chembl_ids  = pd.unique(targets["Target_Chembl_ID"].astype(str))
+	has_uniprot = "Uniprot_ID"  in targets.columns
+	has_name    = "Target_Name" in targets.columns
 
 	job_scripts = []
 	used_names  = set()
 	m_job = []; m_chembl = []; m_uniprot = []; m_tname = []; m_nchain = []
 	m_labels = []; m_ligand = []; m_tc = []; m_smiles = []; m_yaml = []; m_run = []
-	with alive_bar(len(chembl_ids)) as bar :
-		for idxT in np.arange(len(chembl_ids)) :
-			chembl_id = chembl_ids[idxT]
-			rows      = targets[targets["CHEMBL ID"].astype(str) == chembl_id]
-			tname     = rows["Target name"].tolist()[0] if has_name    else ""
-			uniprot   = rows["Uniprot ID"].tolist()[0]  if has_uniprot else ""
+	n_total = len(chembl_ids)
+	log_fh  = open(log_file, "a") if log_file else None
+	bar = tqdm(chembl_ids, desc = "Boltz jobs", unit = "target", file = log_fh,
+		dynamic_ncols = False, mininterval = 0, miniters = 1,
+		bar_format = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]")
+	for idxT, chembl_id in enumerate(bar) :
+		rows      = targets[targets["Target_Chembl_ID"].astype(str) == chembl_id]
+		tname     = rows["Target_Name"].tolist()[0] if has_name    else ""
+		uniprot   = rows["Uniprot_ID"].tolist()[0]  if has_uniprot else ""
 
-			seqs     = rows["Sequence"].tolist()
-			accs     = rows["Uniprot ID"].tolist() if has_uniprot else [None] * len(seqs)
-			seq_rows = [{"sequence" : seqs[idx], "accession" : accs[idx]} for idx in np.arange(len(seqs))]
+		seqs     = rows["Sequence"].tolist()
+		accs     = rows["Uniprot_ID"].tolist() if has_uniprot else [None] * len(seqs)
+		seq_rows = [{"sequence" : seqs[idx], "accession" : accs[idx]} for idx in np.arange(len(seqs))]
 
-			chains = build_chains(chembl_id, seq_rows, stoich_overrides.get(chembl_id), acc2seq, auto_complex)
-			labels = "+".join(str(chains[idx]["label"]) for idx in np.arange(len(chains)))
+		chains = build_chains(chembl_id, seq_rows, stoich_overrides.get(chembl_id), acc2seq, auto_complex)
+		labels = "+".join(str(chains[idx]["label"]) for idx in np.arange(len(chains)))
 
-			ligands = read_ligands(result_dir, base, chembl_id, testFile, tc_min, top_n)
-			if ligands.shape[0] == 0 :
-				print("  {}: no ligand above Tc >= {}; skipped".format(chembl_id, tc_min))
-				bar()
-				continue
+		ligands = read_ligands(result_dir, base, chembl_id, testFile, tc_min, top_n)
+		if ligands.shape[0] == 0 :
+			bar.write("  {}: no ligand above Tc >= {}; skipped".format(chembl_id, tc_min))
+			continue
 
-			for idxL in np.arange(ligands.shape[0]) :
-				lig      = ligands.iloc[idxL]
-				lig_name = sanitize(lig["Name"])
-				smiles   = str(lig["SMILES"]).strip()
-				job_name = "{}__{}".format(sanitize(chembl_id), lig_name)
+		for idxL in np.arange(ligands.shape[0]) :
+			lig      = ligands.iloc[idxL]
+			lig_name = sanitize(lig["Name"])
+			smiles   = str(lig["SMILES"]).strip()
+			job_name = "{}__{}".format(sanitize(chembl_id), lig_name)
 
-				## Two ligand names can sanitize to the same string (e.g. "cpd/1"
-				## and "cpd:1"); suffix the job so it never silently overwrites
-				if job_name in used_names :
-					suffix = 2
-					while "{}_{}".format(job_name, suffix) in used_names : suffix += 1
-					print("  Note: job name {} already used; writing '{}' as {}_{}".format(
-						job_name, lig["Name"], job_name, suffix))
-					job_name = "{}_{}".format(job_name, suffix)
-				used_names.add(job_name)
+			## Two ligand names can sanitize to the same string (e.g. "cpd/1"
+			## and "cpd:1"); suffix the job so it never silently overwrites
+			if job_name in used_names :
+				suffix = 2
+				while "{}_{}".format(job_name, suffix) in used_names : suffix += 1
+				bar.write("  Note: job name {} already used; writing '{}' as {}_{}".format(
+					job_name, lig["Name"], job_name, suffix))
+				job_name = "{}_{}".format(job_name, suffix)
+			used_names.add(job_name)
 
-				job_dir  = os.path.join(out_dir, job_name)
-				_mkdir_(job_dir)
+			job_dir  = os.path.join(out_dir, job_name)
+			_mkdir_(job_dir)
 
-				yaml_path  = os.path.join(job_dir, "{}.yaml".format(job_name))
-				_, n_chain = write_yaml(yaml_path, chains, smiles, msa_mode, msa_dir, predict_affinity)
+			yaml_path  = os.path.join(job_dir, "{}.yaml".format(job_name))
+			_, n_chain = write_yaml(yaml_path, chains, smiles, msa_mode, msa_dir, predict_affinity)
 
-				if predict_affinity and n_chain > 1 :
-					print("  Note: {} has {} protein chains; affinity is trained on "
-						"single-chain complexes -- interpret with care.".format(job_name, n_chain))
+			if predict_affinity and n_chain > 1 :
+				bar.write("  Note: {} has {} protein chains; affinity is trained on "
+					"single-chain complexes -- interpret with care.".format(job_name, n_chain))
 
-				## Per-job run script -- paths are quoted so folders with spaces work
-				server_flag = "--use_msa_server " if msa_mode == "server" else ""
-				cmd = "boltz predict {yaml} --out_dir {out} {server}{extra}".format(
-					yaml   = shlex.quote(os.path.abspath(yaml_path)),
-					out    = shlex.quote(os.path.abspath(os.path.join(job_dir, boltz_out_dir))),
-					server = server_flag,
-					extra  = boltz_extra_args).strip()
-				run_path = os.path.join(job_dir, "run.sh")
-				with open(run_path, "w") as fh :
-					fh.write("#!/usr/bin/env bash\nset -euo pipefail\n{}\n".format(cmd))
-				os.chmod(run_path, 0o755)
-				job_scripts.append(os.path.abspath(run_path))
+			## Per-job run script -- paths are quoted so folders with spaces work
+			server_flag = "--use_msa_server " if msa_mode == "server" else ""
+			cmd = "{bin} predict {yaml} --out_dir {out} {server}{extra}".format(
+				bin    = boltz_bin,
+				yaml   = shlex.quote(os.path.abspath(yaml_path)),
+				out    = shlex.quote(os.path.abspath(os.path.join(job_dir, boltz_out_dir))),
+				server = server_flag,
+				extra  = boltz_extra_args).strip()
+			run_path = os.path.join(job_dir, "run.sh")
+			with open(run_path, "w") as fh :
+				fh.write(
+					"#!/usr/bin/env bash\n"
+					"set -euo pipefail\n"
+					"export LD_LIBRARY_PATH=/nfs/home/khtang/.conda/envs/sea25/lib\n"
+					"{}\n".format(cmd)
+				)
+			os.chmod(run_path, 0o755)
+			job_scripts.append(os.path.abspath(run_path))
 
-				m_job.append(job_name)
-				m_chembl.append(chembl_id)
-				m_uniprot.append(uniprot)
-				m_tname.append(tname)
-				m_nchain.append(n_chain)
-				m_labels.append(labels)
-				m_ligand.append(lig["Name"])
-				m_tc.append(lig["Tc"])
-				m_smiles.append(smiles)
-				m_yaml.append(os.path.abspath(yaml_path))
-				m_run.append(os.path.abspath(run_path))
+			m_job.append(job_name)
+			m_chembl.append(chembl_id)
+			m_uniprot.append(uniprot)
+			m_tname.append(tname)
+			m_nchain.append(n_chain)
+			m_labels.append(labels)
+			m_ligand.append(lig["Name"])
+			m_tc.append(lig["Tc"])
+			m_smiles.append(smiles)
+			m_yaml.append(os.path.abspath(yaml_path))
+			m_run.append(os.path.abspath(run_path))
 
-			bar()
+		_log("[{}/{}] {} — {} ligand(s)".format(idxT + 1, n_total, chembl_id, ligands.shape[0]))
+
+	bar.close()
+	if log_fh :
+		log_fh.close()
 
 	if len(m_job) == 0 :
-		sys.exit("No jobs generated (no target/ligand pairs passed the filters).")
+		raise RuntimeError("No jobs generated (no target/ligand pairs passed the filters).")
 
 	## Master run script -- runs every job sequentially
 	master_path = os.path.join(out_dir, "run_all.sh")
@@ -409,69 +438,71 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 ## Input variables
 ################################################################
 
-## SEA result folder (result_<base>/ written by run_sea_*.py) and the raw
-## test SMILES file (only used as a ligand fallback when a target has no
-## best_similar_*.tsv)
-result_dir = sys.argv[1] if len(sys.argv) > 1 else "result_test"
-testFile   = sys.argv[2] if len(sys.argv) > 2 else "test.smi"
+if __name__ == "__main__" :
 
-## Where to write the generated jobs
-out_dir    = "boltz_jobs"
+	## SEA result folder (result_<base>/ written by run_sea_*.py) and the raw
+	## test SMILES file (only used as a ligand fallback when a target has no
+	## best_similar_*.tsv)
+	result_dir = sys.argv[1] if len(sys.argv) > 1 else "result_test"
+	testFile   = sys.argv[2] if len(sys.argv) > 2 else "test.smi"
 
-## Ligand selection per target
-tc_min     = 0.0     # keep ligand/target pairs with Tanimoto Coefficient >= this
-top_n      = None    # keep at most this many ligands per target (None = all)
+	## Where to write the generated jobs
+	out_dir    = "boltz_jobs"
 
-## MSA handling
-## 	"server"      -- MSA built automatically by the ColabFold MMseqs2
-## 	                 server at predict time (boltz --use_msa_server)
-## 	"precomputed" -- use a per-chain .a3m in msa_dir named <label>.a3m,
-## 	                 where <label> is the Uniprot accession
-## 	"single"      -- single sequence, no MSA
-msa_mode   = "server"
-msa_dir    = "msa"
+	## Ligand selection per target
+	tc_min     = 0.0     # keep ligand/target pairs with Tanimoto Coefficient >= this
+	top_n      = None    # keep at most this many ligands per target (None = all)
 
-## Protein chain composition (monomer-only policy)
-## 	The target's own chain is always folded as a single copy.  Overrides:
-## 	stoich_overrides -- per CHEMBL ID dict that may set:
-## 	                      "copies"  : annotation only; if > 1 a warning is
-## 	                                  printed and the MONOMER is folded
-## 	                      "partners": distinct extra chains (a genuine hetero-
-## 	                                  complex), each a Uniprot accession
-## 	                                  (resolved via lookup) or {"sequence": ..}
-## 	auto_complex     -- if a CHEMBL ID maps to several distinct lookup
-## 	                    sequences, fold them all together as one complex (with
-## 	                    a warning).  Set False to use only the first sequence.
-stoich_overrides = {
-	# "CHEMBL1075021" : {"copies": 2},              # homo-dimer -> warns, folds monomer
-	# "CHEMBL3390824" : {"partners": ["Q9P8R0"]},   # hetero-complex partner chain
-}
-auto_complex     = True
+	## MSA handling
+	## 	"server"      -- MSA built automatically by the ColabFold MMseqs2
+	## 	                 server at predict time (boltz --use_msa_server)
+	## 	"precomputed" -- use a per-chain .a3m in msa_dir named <label>.a3m,
+	## 	                 where <label> is the Uniprot accession
+	## 	"single"      -- single sequence, no MSA
+	msa_mode   = "server"
+	msa_dir    = "msa"
 
-## Lookup TSV used to resolve partner chains given by Uniprot accession
-lookup_file      = "uniprot_chembl_id.tsv"
+	## Protein chain composition (monomer-only policy)
+	## 	The target's own chain is always folded as a single copy.  Overrides:
+	## 	stoich_overrides -- per CHEMBL ID dict that may set:
+	## 	                      "copies"  : annotation only; if > 1 a warning is
+	## 	                                  printed and the MONOMER is folded
+	## 	                      "partners": distinct extra chains (a genuine hetero-
+	## 	                                  complex), each a Uniprot accession
+	## 	                                  (resolved via lookup) or {"sequence": ..}
+	## 	auto_complex     -- if a CHEMBL ID maps to several distinct lookup
+	## 	                    sequences, fold them all together as one complex (with
+	## 	                    a warning).  Set False to use only the first sequence.
+	stoich_overrides = {
+		# "CHEMBL1075021" : {"copies": 2},              # homo-dimer -> warns, folds monomer
+		# "CHEMBL3390824" : {"partners": ["Q9P8R0"]},   # hetero-complex partner chain
+	}
+	auto_complex     = True
 
-## Predict binding affinity for the ligand in addition to the structure
-predict_affinity = True
+	## Lookup TSV used to resolve partner chains given by Uniprot accession
+	lookup_file      = "uniprot_chembl_id.tsv"
 
-## Boltz-2 output sub-folder (inside each job) and any extra CLI arguments
-## (e.g. "--recycling_steps 3 --diffusion_samples 5 --use_potentials")
-boltz_out_dir    = "boltz_out"
-boltz_extra_args = ""
+	## Predict binding affinity for the ligand in addition to the structure
+	predict_affinity = True
+
+	## Boltz-2 output sub-folder (inside each job) and any extra CLI arguments
+	## (e.g. "--recycling_steps 3 --diffusion_samples 5 --use_potentials")
+	boltz_out_dir    = "boltz_out"
+	boltz_extra_args = ""
 
 
-################################################################
-## Run analysis
-################################################################
+	################################################################
+	## Run analysis
+	################################################################
 
-sea_boltz = generate_jobs(result_dir, testFile, out_dir,
-	tc_min           = tc_min,
-	top_n            = top_n,
-	msa_mode         = msa_mode,
-	msa_dir          = msa_dir,
-	predict_affinity = predict_affinity,
-	boltz_out_dir    = boltz_out_dir,
-	boltz_extra_args = boltz_extra_args,
-	lookup_file      = lookup_file,
-	stoich_overrides = stoich_overrides,
-	auto_complex     = auto_complex)
+	sea_boltz = generate_jobs(result_dir, testFile, out_dir,
+		tc_min           = tc_min,
+		top_n            = top_n,
+		msa_mode         = msa_mode,
+		msa_dir          = msa_dir,
+		predict_affinity = predict_affinity,
+		boltz_out_dir    = boltz_out_dir,
+		boltz_extra_args = boltz_extra_args,
+		lookup_file      = lookup_file,
+		stoich_overrides = stoich_overrides,
+		auto_complex     = auto_complex)

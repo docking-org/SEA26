@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import Layout from './components/Layout';
+import 'altcha';
+
+// Mirrors Python sanitize() in generate_boltz_jobs.py
+function sanitize(name) {
+    return String(name).replace(/[^a-zA-Z0-9\-_.]/g, '_').replace(/^_+|_+$/g, '');
+}
 
 // Custom hook for responsive breakpoints
 function useWindowSize() {
@@ -95,6 +101,17 @@ export default function CompoundVsTarget() {
     });
     const [lockedTooltip, setLockedTooltip] = useState(null); // NEW: locked/pinned state
     const [focusedCell, setFocusedCell] = useState({ row: -1, col: -1 });
+    const [boltzStatus, setBoltzStatus] = useState(null); // null | 'loading' | 'success' | 'error'
+    const [boltzMessage, setBoltzMessage] = useState('');
+    const [boltzJobsByChembl, setBoltzJobsByChembl] = useState({}); // chemblId -> [job names]
+    const [slurmJobs, setSlurmJobs] = useState({}); // chemblId -> { slurm_job_id, status }
+    const [slurmSubmitting, setSlurmSubmitting] = useState({}); // chemblId -> bool
+    const [heatmapSubmitting, setHeatmapSubmitting] = useState({}); // jobKey -> bool
+    const [selectedBoltzJob, setSelectedBoltzJob] = useState(''); // full job name e.g. "CHEMBL123__LigandName"
+    const altchaRef = useRef(null);
+    const [altchaPayload, setAltchaPayload] = useState(null);
+    const [altchaVerified, setAltchaVerified] = useState(false);
+    const rightColumnRef = useRef(null);
     const heatmapRef = useRef(null);
     const { width: windowWidth, height: windowHeight } = useWindowSize();
     
@@ -204,9 +221,21 @@ export default function CompoundVsTarget() {
         return { targets, hitsPerTarget, maxHits };
     }, [heatmapData]);
 
-    const getColorForScore = (score, hit, target) => {
+    const STATUS_RGB = {
+        queued:  [107, 114, 128],
+        pending: [217, 119, 6],
+        running: [37, 99, 235],
+        done: [22, 163, 74],
+        failed: [220, 38, 38],
+    };
+
+    const getColorForScore = (score, jobStatus) => {
         if (score === undefined) return '#ffffff';
         const intensity = Math.min(score, 1);
+        if (jobStatus && STATUS_RGB[jobStatus]) {
+            const [r, g, b] = STATUS_RGB[jobStatus];
+            return `rgb(${Math.round(r * intensity + 255 * (1 - intensity))}, ${Math.round(g * intensity + 255 * (1 - intensity))}, ${Math.round(b * intensity + 255 * (1 - intensity))})`;
+        }
         const gray = Math.round(255 * (1 - intensity));
         return `rgb(${gray}, ${gray}, ${gray})`;
     };
@@ -331,15 +360,195 @@ export default function CompoundVsTarget() {
         setTooltip(prev => ({ ...prev, visible: false }));
     };
 
+    async function submitBoltz() {
+        setBoltzStatus('loading');
+        setBoltzMessage('');
+        try {
+            const resp = await fetch('/api/generate_boltz_jobs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task_id: taskId }),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                setBoltzStatus('success');
+                setBoltzMessage(`${data.n_jobs} Boltz job${data.n_jobs !== 1 ? 's' : ''} generated`);
+                fetchBoltzStatus();
+            } else {
+                setBoltzStatus('error');
+                setBoltzMessage(data.detail || 'Failed to generate Boltz jobs');
+            }
+        } catch (err) {
+            setBoltzStatus('error');
+            setBoltzMessage(err.message);
+        }
+    }
+
+    function fetchBoltzStatus() {
+        fetch(`/api/boltz_status?task_id=${taskId}`)
+            .then(r => r.json())
+            .then(data => setBoltzJobsByChembl(data.jobs_by_chembl || {}))
+            .catch(() => {});
+    }
+
+    function fetchSlurmStatus() {
+        fetch(`/api/boltz_slurm_status?task_id=${taskId}`)
+            .then(r => r.json())
+            .then(data => setSlurmJobs(data || {}))
+            .catch(() => {});
+    }
+
+    async function submitSlurmJob(chemblId, ligand) {
+        const jobKey = ligand ? `${chemblId}__${ligand}` : chemblId;
+        setSlurmSubmitting(prev => ({ ...prev, [jobKey]: true }));
+        try {
+            const resp = await fetch('/api/boltz_submit_slurm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task_id: taskId, chembl_id: chemblId, ligand, altcha: altchaPayload }),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                setSlurmJobs(prev => ({
+                    ...prev,
+                    [jobKey]: { slurm_job_id: data.slurm_job_id, chembl_id: chemblId, ligand, status: 'pending' },
+                }));
+                setBoltzJobsByChembl(prev => {
+                    const updated = { ...prev };
+                    if (updated[chemblId]) {
+                        updated[chemblId] = updated[chemblId].filter(j => j !== jobKey);
+                        if (updated[chemblId].length === 0) delete updated[chemblId];
+                    }
+                    return updated;
+                });
+                setSelectedBoltzJob('');
+                if (altchaRef.current) altchaRef.current.reset();
+                setAltchaPayload(null);
+                setAltchaVerified(false);
+            } else {
+                alert(`SLURM submission failed: ${data.detail || 'unknown error'}`);
+            }
+        } catch (err) {
+            alert(`SLURM submission error: ${err.message}`);
+        } finally {
+            setSlurmSubmitting(prev => ({ ...prev, [jobKey]: false }));
+        }
+    }
+
+    async function submitSlurmFromHeatmap(chemblId, ligandName, smiles) {
+        const jobKey = `${sanitize(chemblId)}__${sanitize(ligandName)}`;
+        setHeatmapSubmitting(prev => ({ ...prev, [jobKey]: true }));
+        try {
+            const resp = await fetch('/api/boltz_submit_from_heatmap', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    task_id: taskId,
+                    chembl_id: chemblId,
+                    smiles,
+                    ligand_name: ligandName,
+                    altcha: altchaPayload,
+                }),
+            });
+            const data = await resp.json();
+            if (resp.ok) {
+                setSlurmJobs(prev => ({
+                    ...prev,
+                    [data.job_key]: {
+                        slurm_job_id: null,
+                        chembl_id: chemblId,
+                        ligand: ligandName,
+                        status: 'queued',
+                    },
+                }));
+            } else {
+                alert(`Boltz2 submission failed: ${data.detail || 'unknown error'}`);
+            }
+        } catch (err) {
+            alert(`Boltz2 submission error: ${err.message}`);
+        } finally {
+            setHeatmapSubmitting(prev => ({ ...prev, [jobKey]: false }));
+        }
+    }
+
     useEffect(() => {
         if (taskId) {
             fetchHeatMapData();
+            fetchBoltzStatus();
+            fetchSlurmStatus();
         }
     }, [taskId]);
+
+    const [altchaDisabled, setAltchaDisabled] = useState(false);
+    const [isInternal, setIsInternal] = useState(false);
+
+    useEffect(() => {
+        fetch('/api/is_internal')
+            .then(r => r.json())
+            .then(data => setIsInternal(!!data.internal))
+            .catch(() => setIsInternal(false));
+    }, []);
+
+    useEffect(() => {
+        fetch('/api/captcha/challenge')
+            .then(r => r.json())
+            .then(data => {
+                if (data.disabled) {
+                    setAltchaDisabled(true);
+                    setAltchaVerified(true);
+                }
+            })
+            .catch(() => {});
+    }, []);
+
+    useEffect(() => {
+        const widget = altchaRef.current;
+        if (!widget) return;
+        const handleStateChange = (ev) => {
+            if (ev.detail.state === 'verified' && ev.detail.payload) {
+                setAltchaPayload(ev.detail.payload);
+                setAltchaVerified(true);
+            } else {
+                setAltchaPayload(null);
+                setAltchaVerified(false);
+            }
+        };
+        widget.addEventListener('statechange', handleStateChange);
+        return () => widget.removeEventListener('statechange', handleStateChange);
+    }, []);
+
+    function handleJobRowHover(chemblId, ligandId) {
+        if (!tableData) return;
+        const rowIndex = tableData.targets.findIndex(t => t.split(':')[0] === chemblId);
+        if (rowIndex === -1) return;
+        const colIndex = tableData.hitsPerTarget[tableData.targets[rowIndex]].findIndex(h => h.id === ligandId);
+        if (colIndex === -1) return;
+        setFocusedCell({ row: rowIndex, col: colIndex });
+    }
+
+    function handleJobRowLeave() {
+        setFocusedCell({ row: -1, col: -1 });
+    }
+
+    // Poll SLURM status every 30 s while any job is active
+    useEffect(() => {
+        const hasActive = Object.values(slurmJobs).some(
+            j => j.status === 'pending' || j.status === 'running'
+        );
+        if (!hasActive) return;
+        const id = setInterval(() => {
+            fetch(`/api/boltz_slurm_status?task_id=${taskId}`)
+                .then(r => r.json())
+                .then(data => setSlurmJobs(data || {}))
+                .catch(() => {});
+        }, 30000);
+        return () => clearInterval(id);
+    }, [slurmJobs, taskId]);
 
     useEffect(() => {
         console.log("heatmapData updated:", heatmapData);
     }, [heatmapData]);
+
 
     // Estimate the width of the longest target label
     const targetLabelWidth = useMemo(() => {
@@ -368,7 +577,7 @@ export default function CompoundVsTarget() {
             Math.floor(availableWidth / tableData.maxHits)
         );
 
-        // Calculate height to fit all rows within available vertical space
+        // Calculate height so all rows fit within the viewport
         const availableHeight = windowHeight - (isMobile ? 250 : 350);
         const calculatedHeight = Math.max(
             isMobile ? 10 : 12,
@@ -464,25 +673,28 @@ export default function CompoundVsTarget() {
                     {!isMobile && <> | <strong>SMILES:</strong> {heatmapData.SMILES}</>}
                 </p>
             )}
-            {loading && <p>Loading...</p>}
+
+{loading && <p>Loading...</p>}
             {error && <p style={{ color: 'red' }}>{error}</p>}
             {!rdkitReady && <p style={{ color: '#666' }}>Loading RDKit...</p>}
             
     
             {/* Main content area - stacked on mobile, side by side on desktop */}
-            <div style={{ 
-                display: 'flex', 
+            <div style={{
+                display: 'flex',
                 flexDirection: isMobile ? 'column' : 'row',
-                gap: '20px', 
-                marginTop: '20px', 
-                alignItems: 'flex-start',
+                gap: '20px',
+                marginTop: '20px',
+                alignItems: isMobile ? 'flex-start' : 'stretch',
                 width: '100%'
             }}>
                 {/* Heatmap table */}
                 <div style={{
                     flexShrink: 0,
                     minWidth: 0,
-                    maxWidth: '100%'
+                    maxWidth: '100%',
+                    height: '100%',
+                    overflow: 'auto',
                 }}>
                     {tableData && (
                         <div style={{
@@ -507,6 +719,8 @@ export default function CompoundVsTarget() {
                                                     lockedTooltip.hitId === hit?.id &&
                                                     lockedTooltip.target === target;
                                                 const isFocused = focusedCell.row === rowIndex && focusedCell.col === colIndex;
+                                                const hitJobKey = hit ? `${sanitize(target.split(':')[0])}__${sanitize(hit.id)}` : null;
+                                                const hitJobStatus = hitJobKey ? slurmJobs[hitJobKey]?.status : null;
                                                 return (
                                                     <td
                                                         key={colIndex}
@@ -514,7 +728,7 @@ export default function CompoundVsTarget() {
                                                         onMouseLeave={isDesktop ? handleMouseLeave : undefined}
                                                         onClick={(e) => handleCellClick(e, target, hit)}
                                                         style={{
-                                                            backgroundColor: getColorForScore(hit?.score, hit, target),
+                                                            backgroundColor: getColorForScore(hit?.score, hitJobStatus),
                                                             minWidth: `${cellSize.width}px`,
                                                             width: `${cellSize.width}px`,
                                                             height: `${cellSize.height}px`,
@@ -534,10 +748,10 @@ export default function CompoundVsTarget() {
                                     ))}
                                 </tbody>
                             </table>
-                            <div style={{ 
-                                marginLeft: '10px', 
-                                fontSize: isMobile ? '10px' : '12px', 
-                                flexShrink: 0 
+                            <div style={{
+                                marginLeft: '10px',
+                                fontSize: isMobile ? '10px' : '12px',
+                                flexShrink: 0
                             }}>
                                 {tableData.targets.map(target => (
                                     <div key={target} style={{
@@ -554,24 +768,29 @@ export default function CompoundVsTarget() {
                     )}
                 </div>
 
-                {/* Tooltip with Molecule Images */}
-                <div style={{
+                {/* Right column: molecule viewer + Boltz card */}
+                <div ref={rightColumnRef} style={{
                     flex: '1 1 0%',
                     minWidth: 0,
-                    minHeight: isMobile ? '250px' : '300px',
                     width: '100%',
-                    position: 'sticky',
-                    top: '20px',
-                    alignSelf: 'flex-start'
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '20px',
                 }}>
+                    {/* Tooltip with Molecule Images */}
+                    <div style={{
+                        position: 'sticky',
+                        top: '20px',
+                    }}>
                     <div style={{
                         backgroundColor: 'white',
                         border: lockedTooltip ? '2px solid #007bff' : '1px solid #e0e0e0',
                         color: '#333',
                         borderRadius: '8px',
-                        padding: isMobile ? '15px' : '20px',
+                        padding: isMobile ? '15px 15px' : '20px 20px',
                         boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                        width: '100%'
+                        width: '100%',
+                        boxSizing: 'border-box',
                     }}>
                         {/* Locked indicator */}
                         {lockedTooltip && (
@@ -730,10 +949,158 @@ export default function CompoundVsTarget() {
                                     }
                                 </div>
                             )}
-                        </div>
-                    </div>
-                </div>
-            </div>
+                        </div>{/* end molecules side-by-side */}
+
+                        {/* Submit to Boltz2 — only for internal users when cell is locked */}
+                        {isInternal && lockedTooltip && heatmapData && (() => {
+                            const chemblId   = lockedTooltip.target.split(':')[0];
+                            const targetName = lockedTooltip.target.split(':')[1] || chemblId;
+
+                            const makeBoltzButton = (ligandName, smiles, label) => {
+                                const jobKey   = `${sanitize(chemblId)}__${sanitize(ligandName)}`;
+                                const existing = slurmJobs[jobKey];
+                                const submitting = heatmapSubmitting[jobKey];
+
+                                if (existing?.status === 'done') {
+                                    return (
+                                        <div key={jobKey} style={{ marginBottom: '8px' }}>
+                                            <a
+                                                href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}&ligand=${encodeURIComponent(ligandName)}`}
+                                                style={{ color: '#4f46e5', fontWeight: '600', fontSize: '13px' }}
+                                            >
+                                                Download {label} results
+                                            </a>
+                                        </div>
+                                    );
+                                }
+
+                                const btnLabel = submitting ? 'Submitting…'
+                                    : existing?.status === 'queued'  ? 'Queued — waiting for slot'
+                                    : existing?.status === 'pending' ? `Pending #${existing.slurm_job_id}`
+                                    : existing?.status === 'running' ? `Running #${existing.slurm_job_id}`
+                                    : existing?.status === 'failed'  ? 'Failed — retry?'
+                                    : `Submit ${label} × ${targetName}`;
+
+                                const btnColor = existing?.status === 'queued'  ? '#6b7280'
+                                    : existing?.status === 'pending' ? '#d97706'
+                                    : existing?.status === 'running' ? '#2563eb'
+                                    : existing?.status === 'failed'  ? '#dc2626'
+                                    : '#0d9488';
+
+                                const btnDisabled = submitting
+                                    || existing?.status === 'queued'
+                                    || existing?.status === 'pending'
+                                    || existing?.status === 'running'
+                                    || (!altchaVerified);
+
+                                return (
+                                    <div key={jobKey} style={{ marginBottom: '8px' }}>
+                                        <button
+                                            disabled={btnDisabled}
+                                            onClick={() => submitSlurmFromHeatmap(chemblId, ligandName, smiles)}
+                                            style={{
+                                                width: '100%',
+                                                padding: '8px 14px',
+                                                backgroundColor: btnDisabled ? '#e5e7eb' : btnColor,
+                                                color: btnDisabled ? '#9ca3af' : 'white',
+                                                border: 'none',
+                                                borderRadius: '6px',
+                                                cursor: btnDisabled ? 'not-allowed' : 'pointer',
+                                                fontWeight: '600',
+                                                fontSize: '13px',
+                                            }}
+                                            title={!altchaVerified ? 'Complete the CAPTCHA below first' : ''}
+                                        >
+                                            {btnLabel}
+                                        </button>
+                                    </div>
+                                );
+                            };
+
+                            return (
+                                <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #eee' }}>
+                                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '6px', fontWeight: '600' }}>
+                                        Submit to Boltz2 vs {targetName}
+                                    </div>
+                                    {makeBoltzButton(heatmapData.Name, heatmapData.SMILES, `Query (${heatmapData.Name})`)}
+                                    {lockedTooltip.hitSmiles && lockedTooltip.score < 1 && makeBoltzButton(
+                                        lockedTooltip.hitId,
+                                        lockedTooltip.hitSmiles,
+                                        `Known Hit (${lockedTooltip.hitId})`
+                                    )}
+                                    {!altchaVerified && !altchaDisabled && (
+                                        <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', textAlign: 'center' }}>
+                                            Complete the CAPTCHA in the Boltz section below first
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                    </div>{/* end white molecule card */}
+                    </div>{/* end sticky wrapper */}
+
+                    {/* Submitted SLURM jobs table */}
+                    {isInternal && Object.keys(slurmJobs).length > 0 && (() => {
+                        const jobsByTarget = Object.entries(slurmJobs).reduce((acc, [jobKey, info]) => {
+                            const target = info.chembl_id || '—';
+                            if (!acc[target]) acc[target] = [];
+                            acc[target].push([jobKey, info]);
+                            return acc;
+                        }, {});
+                        const statusColors = { pending: '#d97706', running: '#2563eb', done: '#16a34a', failed: '#dc2626', queued: '#6b7280' };
+                        return (
+                            <div style={{ marginTop: '16px' }}>
+                                <div style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>Submitted Jobs</div>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                    <thead>
+                                        <tr style={{ backgroundColor: '#f3f4f6' }}>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Target</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Ligand</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Job ID</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>Status</th>
+                                            <th style={{ padding: '6px 10px', textAlign: 'left', fontWeight: '600', color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {Object.entries(jobsByTarget).map(([target, jobs]) => (
+                                            jobs.map(([jobKey, info], i) => {
+                                                const color = statusColors[info.status] || '#6b7280';
+                                                const isLast = i === jobs.length - 1;
+                                                return (
+                                                    <tr key={jobKey} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f9fafb' }} onMouseEnter={() => handleJobRowHover(info.chembl_id, info.ligand)} onMouseLeave={handleJobRowLeave}>
+                                                        {i === 0 && (
+                                                            <td rowSpan={jobs.length} style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', color: '#374151', fontWeight: '600', verticalAlign: 'middle' }}>
+                                                                {target}
+                                                            </td>
+                                                        )}
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#374151' }}>{info.ligand || '—'}</td>
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#6b7280', fontFamily: 'monospace' }}>{info.slurm_job_id || '—'}</td>
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb' }}>
+                                                            <span style={{ color, fontWeight: '500' }}>{info.status}</span>
+                                                        </td>
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb' }}>
+                                                            {info.status === 'done' && (
+                                                                <a
+                                                                    href={`/api/boltz_download?task_id=${taskId}&chembl_id=${info.chembl_id}${info.ligand ? `&ligand=${encodeURIComponent(info.ligand)}` : ''}`}
+                                                                    style={{ color: '#6366f1', textDecoration: 'underline' }}
+                                                                >
+                                                                    Download
+                                                                </a>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        );
+                    })()}
+
+                </div>{/* end right column */}
+            </div>{/* end main two-column row */}
         </Layout>
     )
 }

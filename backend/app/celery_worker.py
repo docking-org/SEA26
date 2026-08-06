@@ -11,6 +11,7 @@ import numpy as np
 import redis
 import pickle
 from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress, get_progress
+from .scripts.generate_boltz_jobs import generate_jobs as _generate_boltz_jobs
 from dotenv import load_dotenv, find_dotenv
 import os
 
@@ -390,7 +391,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                     "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
                 })
                 best_similarity = best_similarity.sort_values(by=["Tanimoto_Coefficient"], ascending=False, ignore_index=True)
-                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.7]
+                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= os.getenv("TC_CUTOFF", 0.28)]
                 best_similarity.to_csv(f"{save_folder}/best_similar_{target_cid}.tsv", sep="\t", index=False)
 
                 # Top 10 similarity matrix — use argpartition instead of full sort
@@ -493,6 +494,30 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         raise
 
     _write_log_(phase3_log, f"Phase 3 completed: {len(heatmap_result)} compounds written to .heatmap")
+
+    # --- Phase 4: Generate Boltz-2 job folders ---
+    phase4_log = f"{log_dir}/boltz.log"
+    try:
+        _write_log_(phase4_log, "Phase 4 started: generating Boltz-2 job folders")
+        boltz_out = f"{job_dir}/{task_id}/boltz_jobs"
+        test_file = f"{job_dir}/{task_id}/input.smi"
+        result_dir = f"{job_dir}/{task_id}/sea_output"
+        lookup_file = os.path.join(os.getenv("SEA_DATA_FOLDER"), "uniprot_chembl_id.tsv")
+        manifest = _generate_boltz_jobs(
+            result_dir=result_dir,
+            testFile=test_file,
+            out_dir=boltz_out,
+            tc_min=0.0,
+            lookup_file=lookup_file,
+            predict_affinity=True,
+            log_file=phase4_log,
+        )
+        _write_log_(phase4_log, f"Phase 4 completed: {manifest.shape[0]} Boltz jobs written to {boltz_out}")
+    except RuntimeError as e:
+        _write_log_(phase4_log, f"Phase 4 skipped: {e}")
+    except Exception as e:
+        _write_log_(phase4_log, f"Phase 4 FAILED: {e}\n{traceback.format_exc()}")
+
     save_progress(task_id, {
         'progress': 100, 'status': 'SUCCESS', 'error': None,
         'sea_calculated': True, 'best_similarity_calculated': True,
@@ -530,7 +555,7 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
     best_similarity["Tanimoto_Coefficient"] = list(result.max(axis = 1))
     best_similarity["Known_Hit_SMILES"] = [known.loc["{}".format(name), "canonical_smiles"] for name in result.idxmax(axis = "columns")] 
     best_similarity = best_similarity.sort_values(by = ["Tanimoto_Coefficient"], ascending = False, ignore_index = True)
-    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.7]
+    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= 0.28]
     best_similarity.to_csv(f"{save_folder}/best_similar_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
     
     # get top 10 similarity matrix
@@ -583,10 +608,92 @@ def cleanup_task(*args, **kwargs):
                 print(f"Removed old job folder: {dir_path}")
     return "Cleanup completed."
 
+@celery.task(name="boltz.drain_queue")
+def drain_boltz_queue():
+    """Submit queued Boltz2 jobs to SLURM when running slots are available."""
+    import subprocess, glob as _glob, json as _json
+
+    # Distributed lock — only one drain runs at a time across all workers
+    lock_key = "boltz_drain_lock"
+    lock_ttl = 60  # seconds; longer than one drain cycle
+    acquired = r.set(lock_key, "1", nx=True, ex=lock_ttl)
+    if not acquired:
+        return
+
+    try:
+        MAX_RUNNING = int(os.getenv("BOLTZ_MAX_RUNNING", 4))
+
+        # Count how many Boltz jobs are currently in SLURM (pending or running)
+        try:
+            try:
+                import pwd as _pwd
+                username = _pwd.getpwuid(os.getuid()).pw_name
+            except KeyError:
+                username = str(os.getuid())
+            sq = subprocess.run(
+                ["squeue", "--noheader", "--format=%j", f"--user={username}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if sq.returncode != 0:
+                print(f"drain_boltz_queue: squeue error: {sq.stderr.strip()}")
+                return
+            running = sum(1 for line in sq.stdout.splitlines() if line.strip().startswith("sea_boltz2_"))
+        except Exception as e:
+            print(f"drain_boltz_queue: cannot count running jobs: {e}")
+            return  # Fail safe: don't submit if we can't count
+
+        slots_free = MAX_RUNNING - running
+        if slots_free <= 0:
+            return
+
+        submitted = 0
+        while submitted < slots_free:
+            entry_raw = r.lpop("boltz_queue")
+            if not entry_raw:
+                break
+            try:
+                entry = _json.loads(entry_raw)
+                job_key      = entry["job_key"]
+                boltz_dir    = entry["boltz_dir"]
+                slurm_script = entry["slurm_script"]
+
+                result = subprocess.run(["sbatch", slurm_script], capture_output=True, text=True, timeout=30)
+                if result.returncode != 0:
+                    print(f"drain_boltz_queue: sbatch failed for {job_key}: {result.stderr.strip()}")
+                    # Put the job back at the front of the queue so it isn't lost
+                    r.lpush("boltz_queue", entry_raw)
+                    break
+
+                job_id = result.stdout.strip().split()[-1]
+                submitted += 1
+
+                jobs_file = f"{boltz_dir}/.slurm_jobs.json"
+                slurm_jobs = {}
+                if os.path.exists(jobs_file):
+                    with open(jobs_file) as _f:
+                        slurm_jobs = _json.load(_f)
+                if job_key in slurm_jobs:
+                    slurm_jobs[job_key]["slurm_job_id"] = job_id
+                    slurm_jobs[job_key]["status"] = "pending"
+                    slurm_jobs[job_key]["submitted_at"] = __import__("datetime").datetime.utcnow().isoformat()
+                with open(jobs_file, "w") as _f:
+                    _json.dump(slurm_jobs, _f)
+
+                print(f"drain_boltz_queue: submitted {job_key} → SLURM job {job_id} ({submitted}/{slots_free} slots used)")
+            except Exception as e:
+                print(f"drain_boltz_queue: error processing entry: {e}")
+    finally:
+        r.delete(lock_key)
+
+
 celery.conf.beat_schedule = {
     'daily-cleanup-task': {
         'task': 'main.cleanup_task',
         'schedule': crontab(minute=10, hour='*'),  # Run every hour
+    },
+    'drain-boltz-queue': {
+        'task': 'boltz.drain_queue',
+        'schedule': 30.0,  # every 30 seconds
     },
 }
 
