@@ -784,7 +784,7 @@ def is_internal(request: Request):
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         client_ip = forwarded_for.split(",")[0].strip()
-    return {"internal": _is_internal_ip(client_ip)}
+    return {"internal": _is_internal_ip(client_ip), "ip": client_ip, "headers": dict(request.headers)}
 
 @router.get("/cache_info")
 def cache_info():
