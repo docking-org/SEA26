@@ -13,8 +13,7 @@ from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, APIRouter, HTTPException
-from fastapi import Request
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -346,7 +345,32 @@ def get_best_similarity_per_target(request: Request):
             "best_similarity": best_similarity_json,
             "grouped_best_similarity": result_best_similarity}
 
-@router.get("/boltz_status")
+_DEFAULT_INTERNAL_SUBNETS = [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "::1/128",
+]
+
+def _get_internal_subnets() -> list[ipaddress.ip_network]:
+    raw = os.getenv("INTERNAL_SUBNETS")
+    subnets = [s.strip() for s in raw.split(",")] if raw else _DEFAULT_INTERNAL_SUBNETS
+    return [ipaddress.ip_network(s, strict=False) for s in subnets]
+
+def _is_internal_ip(ip_str: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return any(addr in net for net in _get_internal_subnets())
+    except ValueError:
+        return False
+
+def _require_internal(request: Request):
+    client_ip = request.client.host if request.client else ""
+    if not _is_internal_ip(client_ip):
+        raise HTTPException(status_code=403, detail="Access restricted to internal network")
+
+@router.get("/boltz_status", dependencies=[Depends(_require_internal)])
 def boltz_status(request: Request):
     task_id = request.query_params.get("task_id")
     if not task_id:
@@ -362,7 +386,7 @@ def boltz_status(request: Request):
     )
     return {"jobs_by_chembl": jobs_by_chembl}
 
-@router.get("/boltz_run_sh")
+@router.get("/boltz_run_sh", dependencies=[Depends(_require_internal)])
 def boltz_run_sh(request: Request):
     task_id  = request.query_params.get("task_id")
     chembl_id = request.query_params.get("chembl_id")
@@ -389,7 +413,7 @@ def boltz_run_sh(request: Request):
         headers={"Content-Disposition": f"attachment; filename=\"run_boltz_{chembl_id}.sh\""}
     )
 
-@router.post("/generate_boltz_jobs")
+@router.post("/generate_boltz_jobs", dependencies=[Depends(_require_internal)])
 async def generate_boltz_jobs_endpoint(request: Request):
     body = await request.json()
     task_id = body.get("task_id")
@@ -438,7 +462,7 @@ _SLURM_STATE_MAP = {
 
 _TERMINAL_STATES = {"done", "failed"}
 
-@router.post("/boltz_submit_slurm")
+@router.post("/boltz_submit_slurm", dependencies=[Depends(_require_internal)])
 async def boltz_submit_slurm(request: Request):
     body = await request.json()
     task_id   = body.get("task_id")
@@ -523,7 +547,7 @@ async def boltz_submit_slurm(request: Request):
 
     return {"slurm_job_id": job_id}
 
-@router.post("/boltz_submit_from_heatmap", include_in_schema=False)
+@router.post("/boltz_submit_from_heatmap", include_in_schema=False, dependencies=[Depends(_require_internal)])
 async def boltz_submit_from_heatmap(request: Request):
     from .scripts.generate_boltz_jobs import write_yaml, sanitize
     body = await request.json()
@@ -647,7 +671,7 @@ async def boltz_submit_from_heatmap(request: Request):
 
     return {"status": "queued", "job_key": job_name}
 
-@router.get("/boltz_slurm_status")
+@router.get("/boltz_slurm_status", dependencies=[Depends(_require_internal)])
 def boltz_slurm_status(request: Request):
     task_id = request.query_params.get("task_id")
     if not task_id:
@@ -696,7 +720,7 @@ def boltz_slurm_status(request: Request):
 
     return out
 
-@router.get("/boltz_download")
+@router.get("/boltz_download", dependencies=[Depends(_require_internal)])
 def boltz_download(request: Request):
     task_id   = request.query_params.get("task_id")
     chembl_id = request.query_params.get("chembl_id")
@@ -756,26 +780,6 @@ def warm_cache():
     """Trigger Redis cache warming for target files."""
     task = warm_target_cache.delay()
     return {"message": "Cache warming started", "task_id": task.id}
-
-_DEFAULT_INTERNAL_SUBNETS = [
-    "127.0.0.0/8",
-    "10.0.0.0/8",
-    "172.16.0.0/12",
-    "192.168.0.0/16",
-    "::1/128",
-]
-
-def _get_internal_subnets() -> list[ipaddress.ip_network]:
-    raw = os.getenv("INTERNAL_SUBNETS")
-    subnets = [s.strip() for s in raw.split(",")] if raw else _DEFAULT_INTERNAL_SUBNETS
-    return [ipaddress.ip_network(s, strict=False) for s in subnets]
-
-def _is_internal_ip(ip_str: str) -> bool:
-    try:
-        addr = ipaddress.ip_address(ip_str)
-        return any(addr in net for net in _get_internal_subnets())
-    except ValueError:
-        return False
 
 @router.get("/is_internal")
 def is_internal(request: Request):
