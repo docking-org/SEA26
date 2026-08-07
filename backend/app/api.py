@@ -110,6 +110,7 @@ async def submit_task(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=400, detail=f"Query is limited to 10 compounds. You submitted {len(non_empty_lines)}.")
 
     invalid_smiles = validate_smiles_input(query)
+    
     if invalid_smiles:
         lines_detail = "; ".join([f"Line {line_num}: '{line}'" for line_num, line in invalid_smiles])
         raise HTTPException(status_code=400, detail=f"Invalid SMILES input. Please check the following lines: {lines_detail}")
@@ -146,13 +147,16 @@ async def _submit_sea_job(task_id: str, input_data: dict):
     import time
     start = time.time()
     try:
-        smiles_test = [
-            f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}"
-            for x in input_data.splitlines()
-            if x.strip()
-        ]
+        if not input_data:
+            raise HTTPException(status_code=400, detail="Input data is empty.")
         with open(f"{os.getenv('SEA_JOB_DIR')}/{task_id}/input.smi", "w") as f:
             f.write(input_data)
+        smiles_test = [
+            f"{remove_salt(parts[0])} {parts[1] if len(parts) > 1 else parts[0]}"
+            for x in input_data.splitlines()
+            if x.strip()
+            for parts in [x.strip().split()]
+        ]
         # init_progress_file(task_id)
         # Load GEV params (shared cache in SEA_DATA_FOLDER; fits on first-ever run)
         data_folder = os.getenv("SEA_DATA_FOLDER")
@@ -262,8 +266,9 @@ async def get_result(request: Request):
         job_info["result"] = table_result
         input_f = f"{job_dir}/input.smi"
         smiles_test = [
-            f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}"
+            f"{remove_salt(parts[0])} {parts[1] if len(parts) > 1 else parts[0]}"
             for x in open(input_f).read().splitlines() if x.strip()
+            for parts in [x.strip().split()]
         ]
         job_info['input'] = smiles_test
     return job_info
