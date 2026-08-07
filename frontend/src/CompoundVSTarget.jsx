@@ -533,7 +533,7 @@ export default function CompoundVsTarget() {
     // Poll SLURM status every 30 s while any job is active
     useEffect(() => {
         const hasActive = Object.values(slurmJobs).some(
-            j => j.status === 'pending' || j.status === 'running'
+            j => j.status === 'queued' || j.status === 'pending' || j.status === 'running'
         );
         if (!hasActive) return;
         const id = setInterval(() => {
@@ -1028,9 +1028,18 @@ export default function CompoundVsTarget() {
                                         lockedTooltip.hitSmiles,
                                         `Known Hit (${lockedTooltip.hitId})`
                                     )}
+                                    {!altchaDisabled && (
+                                        <div style={{ marginTop: '10px' }}>
+                                            <altcha-widget
+                                                ref={altchaRef}
+                                                challengeurl="/api/captcha/challenge"
+                                                style={{ display: 'block' }}
+                                            />
+                                        </div>
+                                    )}
                                     {!altchaVerified && !altchaDisabled && (
                                         <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', textAlign: 'center' }}>
-                                            Complete the CAPTCHA in the Boltz section below first
+                                            Complete the CAPTCHA first
                                         </div>
                                     )}
                                 </div>
