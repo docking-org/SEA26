@@ -486,7 +486,7 @@ export default function CompoundVsTarget() {
     useEffect(() => {
         fetch('/api/is_internal')
             .then(r => r.json())
-            .then(data => { console.log('client IP:', data.ip, '| internal:', data.internal); setIsInternal(!!data.internal); })
+            .then(data => { console.log('client IP:', data.ip); setIsInternal(!!data.internal); })
             .catch(() => setIsInternal(false));
     }, []);
 

@@ -54,7 +54,7 @@ services:
       - .env
     ports:
       - "5055:5055"
-    command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5055 --reload
+    command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5055 --reload --proxy-headers 
     volumes:
       - ./backend:/home/sea/backend
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
