@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import Layout from './components/Layout';
 import 'altcha';
@@ -109,6 +109,7 @@ export default function CompoundVsTarget() {
     const [heatmapSubmitting, setHeatmapSubmitting] = useState({}); // jobKey -> bool
     const [selectedBoltzJob, setSelectedBoltzJob] = useState(''); // full job name e.g. "CHEMBL123__LigandName"
     const altchaRef = useRef(null);
+    const altchaHandlerRef = useRef(null);
     const [altchaPayload, setAltchaPayload] = useState(null);
     const [altchaVerified, setAltchaVerified] = useState(false);
     const rightColumnRef = useRef(null);
@@ -501,8 +502,12 @@ export default function CompoundVsTarget() {
             .catch(() => {});
     }, []);
 
-    useEffect(() => {
-        const widget = altchaRef.current;
+    // Callback ref — runs when the widget actually mounts/unmounts (conditional render safe)
+    const altchaCallbackRef = useCallback((widget) => {
+        if (altchaRef.current && altchaHandlerRef.current) {
+            altchaRef.current.removeEventListener('statechange', altchaHandlerRef.current);
+        }
+        altchaRef.current = widget;
         if (!widget) return;
         const handleStateChange = (ev) => {
             const { state, payload } = ev.detail;
@@ -515,8 +520,8 @@ export default function CompoundVsTarget() {
             }
             // ignore 'verifying' — transient state, don't drop existing verified status
         };
+        altchaHandlerRef.current = handleStateChange;
         widget.addEventListener('statechange', handleStateChange);
-        return () => widget.removeEventListener('statechange', handleStateChange);
     }, []);
 
     function handleJobRowHover(chemblId, ligandId) {
@@ -1033,8 +1038,8 @@ export default function CompoundVsTarget() {
                                     {!altchaDisabled && (
                                         <div style={{ marginTop: '10px' }}>
                                             <altcha-widget
-                                                ref={altchaRef}
-                                                challengeurl="/api/captcha/challenge"
+                                                ref={altchaCallbackRef}
+                                                challenge="/api/captcha/challenge"
                                                 style={{ display: 'block' }}
                                             />
                                         </div>
