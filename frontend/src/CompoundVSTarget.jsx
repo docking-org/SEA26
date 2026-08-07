@@ -505,13 +505,15 @@ export default function CompoundVsTarget() {
         const widget = altchaRef.current;
         if (!widget) return;
         const handleStateChange = (ev) => {
-            if (ev.detail.state === 'verified' && ev.detail.payload) {
-                setAltchaPayload(ev.detail.payload);
+            const { state, payload } = ev.detail;
+            if (state === 'verified' && payload) {
+                setAltchaPayload(payload);
                 setAltchaVerified(true);
-            } else {
+            } else if (state === 'unverified' || state === 'error') {
                 setAltchaPayload(null);
                 setAltchaVerified(false);
             }
+            // ignore 'verifying' — transient state, don't drop existing verified status
         };
         widget.addEventListener('statechange', handleStateChange);
         return () => widget.removeEventListener('statechange', handleStateChange);
