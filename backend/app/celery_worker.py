@@ -682,6 +682,8 @@ def drain_boltz_queue():
                 print(f"drain_boltz_queue: submitted {job_key} → SLURM job {job_id} ({submitted}/{slots_free} slots used)")
             except Exception as e:
                 print(f"drain_boltz_queue: error processing entry: {e}")
+                r.lpush("boltz_queue", entry_raw)
+                break
     finally:
         r.delete(lock_key)
 
@@ -770,7 +772,7 @@ def update_boltz_status():
                             dirty = True
                             continue
                         elapsed = (_dt.utcnow() - _dt.fromisoformat(missing_since)).total_seconds()
-                        if elapsed < 300:  # 5-minute grace period
+                        if elapsed < 900:  # 15-minute grace period
                             continue
                         new_status = "failed"
                 else:
