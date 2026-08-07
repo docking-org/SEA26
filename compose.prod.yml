@@ -54,7 +54,7 @@ services:
       - "5050:5050"
     env_file:
       - .env
-    command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --workers 5
+    command: uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --workers 5 --proxy-headers
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
