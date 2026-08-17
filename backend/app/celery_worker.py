@@ -593,9 +593,9 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
 def cleanup_task(*args, **kwargs):
    
     save_folder = os.environ.get("SEA_JOB_DIR")
-    # keep the last 30 jobs in the folder or remove the job folder what are older than 3 hours
+     # keep jobs less than 96 hours old; only run cleanup if there are 30+ jobs
     if len(os.listdir(save_folder)) < 30:
-        return "No cleanup needed. There are currently {} job folders.".format(len(os.listdir(save_folder)))
+        return f"No cleanup needed. There are currently {len(os.listdir(save_folder))} job folders."
     
     import shutil
     import time
@@ -603,7 +603,7 @@ def cleanup_task(*args, **kwargs):
         dir_path = os.path.join(save_folder, dir)
         if os.path.isdir(dir_path):
             dir_time = os.path.getmtime(dir_path)
-            if (time.time() - dir_time) > 3 * 3600 and len(os.listdir(save_folder)) > 30:  # 1 day 
+            if (time.time() - dir_time) > 96 * 3600:
                 shutil.rmtree(dir_path)
                 print(f"Removed old job folder: {dir_path}")
     return "Cleanup completed."
