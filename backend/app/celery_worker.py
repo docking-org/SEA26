@@ -591,219 +591,150 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
 
 @celery.task(name="main.cleanup_task")
 def cleanup_task(*args, **kwargs):
-   
+    import re, shutil, time
+
     save_folder = os.environ.get("SEA_JOB_DIR")
-     # keep jobs less than 96 hours old; only run cleanup if there are 30+ jobs
-    if len(os.listdir(save_folder)) < 30:
-        return f"No cleanup needed. There are currently {len(os.listdir(save_folder))} job folders."
-    
-    import shutil
-    import time
-    for dir in os.listdir(save_folder):
-        dir_path = os.path.join(save_folder, dir)
+    _uuid_re = re.compile(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        re.IGNORECASE,
+    )
+
+    sea_dirs = [d for d in os.listdir(save_folder) if _uuid_re.match(d)]
+    if len(sea_dirs) < 30:
+        return "No cleanup needed. There are currently {} SEA job folders.".format(len(sea_dirs))
+
+    removed = 0
+    for name in sea_dirs:
+        dir_path = os.path.join(save_folder, name)
         if os.path.isdir(dir_path):
-            dir_time = os.path.getmtime(dir_path)
-            if (time.time() - dir_time) > 96 * 3600:
+            if (time.time() - os.path.getmtime(dir_path)) > 96 * 3600:
                 shutil.rmtree(dir_path)
+                removed += 1
                 print(f"Removed old job folder: {dir_path}")
-    return "Cleanup completed."
+    return f"Cleanup completed. Removed {removed} folder(s)."
 
-@celery.task(name="boltz.drain_queue")
-def drain_boltz_queue():
-    """Submit queued Boltz2 jobs to SLURM when running slots are available."""
+
+
+@celery.task(name="boltz.run_job", bind=True)
+def run_boltz_job(self, task_id: str, job_key: str, boltz_dir: str, run_script: str):
+    """Run a Boltz2 prediction job as a subprocess. Routes to the dedicated 'boltz' queue (concurrency=1)."""
     import subprocess, glob as _glob, json as _json
+    from datetime import datetime, timezone
+    jobs_file = f"{boltz_dir}/.boltz_jobs.json"
+    log_file = os.path.join(boltz_dir, job_key, "boltz_run.log")
 
-    # Distributed lock — only one drain runs at a time across all workers
-    lock_key = "boltz_drain_lock"
-    lock_ttl = 60  # seconds; longer than one drain cycle
-    acquired = r.set(lock_key, "1", nx=True, ex=lock_ttl)
-    if not acquired:
-        return
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
 
-    try:
-        MAX_RUNNING = int(os.getenv("BOLTZ_MAX_RUNNING", 4))
-
-        # Count how many Boltz jobs are currently in SLURM (pending or running)
+    def _update_jobs(updates: dict):
+        import tempfile as _tempfile, fcntl as _fcntl
         try:
-            try:
-                import pwd as _pwd
-                username = _pwd.getpwuid(os.getuid()).pw_name
-            except KeyError:
-                username = str(os.getuid())
-            sq = subprocess.run(
-                ["squeue", "--noheader", "--format=%j", f"--user={username}"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if sq.returncode != 0:
-                print(f"drain_boltz_queue: squeue error: {sq.stderr.strip()}")
-                return
-            running = sum(1 for line in sq.stdout.splitlines() if line.strip().startswith("sea_boltz2_"))
-        except Exception as e:
-            print(f"drain_boltz_queue: cannot count running jobs: {e}")
-            return  # Fail safe: don't submit if we can't count
-
-        slots_free = MAX_RUNNING - running
-        if slots_free <= 0:
-            return
-
-        submitted = 0
-        while submitted < slots_free:
-            entry_raw = r.lpop("boltz_queue")
-            if not entry_raw:
-                break
-            try:
-                entry = _json.loads(entry_raw)
-                job_key      = entry["job_key"]
-                boltz_dir    = entry["boltz_dir"]
-                slurm_script = entry["slurm_script"]
-
-                result = subprocess.run(["sbatch", slurm_script], capture_output=True, text=True, timeout=30)
-                if result.returncode != 0:
-                    print(f"drain_boltz_queue: sbatch failed for {job_key}: {result.stderr.strip()}")
-                    # Put the job back at the front of the queue so it isn't lost
-                    r.lpush("boltz_queue", entry_raw)
-                    break
-
-                job_id = result.stdout.strip().split()[-1]
-                submitted += 1
-
-                jobs_file = f"{boltz_dir}/.slurm_jobs.json"
-                slurm_jobs = {}
-                if os.path.exists(jobs_file):
+            lock_path = jobs_file + ".lock"
+            with open(lock_path, "a") as _lf:
+                _fcntl.lockf(_lf, _fcntl.LOCK_EX)
+                try:
                     with open(jobs_file) as _f:
-                        slurm_jobs = _json.load(_f)
-                if job_key in slurm_jobs:
-                    slurm_jobs[job_key]["slurm_job_id"] = job_id
-                    slurm_jobs[job_key]["status"] = "pending"
-                    slurm_jobs[job_key]["submitted_at"] = __import__("datetime").datetime.utcnow().isoformat()
-                with open(jobs_file, "w") as _f:
-                    _json.dump(slurm_jobs, _f)
+                        jobs = _json.load(_f)
+                    jobs[job_key].update(updates)
+                    dir_name = os.path.dirname(jobs_file)
+                    with _tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, suffix=".tmp") as tf:
+                        _json.dump(jobs, tf)
+                        tmp_path = tf.name
+                    os.replace(tmp_path, jobs_file)
+                finally:
+                    _fcntl.lockf(_lf, _fcntl.LOCK_UN)
+        except Exception as e:
+            print(f"run_boltz_job: failed to update jobs file for {job_key}: {e}")
 
-                print(f"drain_boltz_queue: submitted {job_key} → SLURM job {job_id} ({submitted}/{slots_free} slots used)")
-            except Exception as e:
-                print(f"drain_boltz_queue: error processing entry: {e}")
-                r.lpush("boltz_queue", entry_raw)
-                break
-    finally:
-        r.delete(lock_key)
+    # Mark running
+    start_time = time.monotonic()
+    _update_jobs({"status": "running", "celery_task_id": self.request.id,
+                  "started_at": _now(), "log_file": log_file})
 
-
-@celery.task(name="boltz.update_status")
-def update_boltz_status():
-    """Periodically scan all .slurm_jobs.json files and update job statuses via squeue + output files."""
-    import subprocess, glob as _glob, json as _json
-
-    lock_key = "boltz_status_lock"
-    lock_ttl = 60
-    acquired = r.set(lock_key, "1", nx=True, ex=lock_ttl)
-    if not acquired:
-        return
-
+    # Stream subprocess output to log file and celery stdout
+    success = False
     try:
-        job_dir_base = os.getenv("SEA_JOB_DIR", "")
-        if not job_dir_base:
-            return
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        with open(log_file, "w") as lf:
+            lf.write(f"[{_now()}] Starting {job_key}\n")
+            lf.flush()
+            proc = subprocess.Popen(
+                ["bash", run_script],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            for line in proc.stdout:
+                lf.write(line)
+                lf.flush()
+                print(f"run_boltz_job [{job_key}]: {line}", end="")
+            proc.wait()
+            success = proc.returncode == 0
+            elapsed = time.monotonic() - start_time
+            lf.write(f"[{_now()}] Process exited with code {proc.returncode} (elapsed: {elapsed:.1f}s)\n")
+        if not success:
+            print(f"run_boltz_job: {job_key} exited {proc.returncode}")
+        else:
+            print(f"run_boltz_job: {job_key} subprocess OK")
+    except Exception as e:
+        print(f"run_boltz_job: subprocess error for {job_key}: {e}")
 
-        # Fetch all active SLURM jobs in one call
+    # Check output files as ground truth (boltz may exit non-zero but still produce output)
+    pred_base = os.path.join(boltz_dir, job_key, "boltz_out",
+                             f"boltz_results_{job_key}", "predictions", job_key)
+    print(f"run_boltz_job: checking pred_base={pred_base} exists={os.path.isdir(pred_base)}")
+    cif_files = _glob.glob(os.path.join(pred_base, "*.cif")) if os.path.isdir(pred_base) else []
+    print(f"run_boltz_job: cif_files={cif_files}")
+    if not success and cif_files:
+        print(f"run_boltz_job: {job_key} non-zero exit but .cif files found — marking done")
+        success = True
+
+    elapsed = time.monotonic() - start_time
+    final_status = "done" if success else "failed"
+    _update_jobs({"status": final_status, "finished_at": _now(), "elapsed_seconds": round(elapsed, 1)})
+    print(f"run_boltz_job: {job_key} → {final_status} in {elapsed:.1f}s")
+
+    # Populate MSA cache for chains that were fetched via --use_msa_server
+    if success:
         try:
-            import pwd as _pwd
-            username = _pwd.getpwuid(os.getuid()).pw_name
-        except (KeyError, ImportError):
-            username = str(os.getuid())
-
-        sq = subprocess.run(
-            ["squeue", "--noheader", "--format=%i %T", f"--user={username}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        squeue_ok = sq.returncode == 0
-        active_jobs = {}  # job_id -> SLURM state string
-        if squeue_ok:
-            for line in sq.stdout.strip().splitlines():
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    active_jobs[parts[0]] = parts[1]
-
-        _STATE_MAP = {
-            "PENDING": "pending", "CONFIGURING": "pending",
-            "RUNNING": "running", "COMPLETING": "running",
-            "COMPLETED": "done",
-            "FAILED": "failed", "CANCELLED": "failed", "TIMEOUT": "failed",
-            "OUT_OF_MEMORY": "failed",
-        }
-        _TERMINAL = {"done", "failed"}
-
-        for jobs_file in _glob.glob(f"{job_dir_base}/*/boltz_jobs/.slurm_jobs.json"):
-            boltz_dir = os.path.dirname(jobs_file)
-            try:
-                with open(jobs_file) as _f:
-                    slurm_jobs = _json.load(_f)
-            except Exception:
-                continue
-
-            dirty = False
-            for job_key, info in slurm_jobs.items():
-                if info.get("status") in _TERMINAL:
-                    continue
-                job_id = info.get("slurm_job_id")
-                if not job_id or info.get("status") == "queued":
-                    continue
-
-                str_job_id = str(job_id)
-
-                if squeue_ok and str_job_id in active_jobs:
-                    new_status = _STATE_MAP.get(active_jobs[str_job_id], "unknown")
-                    # Clear stale missing_since if job reappears (shouldn't happen, but be safe)
-                    if "missing_since" in slurm_jobs[job_key]:
-                        del slurm_jobs[job_key]["missing_since"]
-                        dirty = True
-                elif squeue_ok and str_job_id not in active_jobs:
-                    # Job has left the queue — check output files first
-                    pred_base = os.path.join(boltz_dir, job_key, "boltz_out",
-                                             f"boltz_results_{job_key}", "predictions", job_key)
-                    if os.path.isdir(pred_base) and _glob.glob(os.path.join(pred_base, "*.cif")):
-                        new_status = "done"
-                    else:
-                        # No output yet — use a grace period before marking failed,
-                        # because the filesystem may still be flushing output files.
-                        from datetime import datetime as _dt
-                        missing_since = info.get("missing_since")
-                        if missing_since is None:
-                            slurm_jobs[job_key]["missing_since"] = _dt.utcnow().isoformat()
-                            dirty = True
-                            continue
-                        elapsed = (_dt.utcnow() - _dt.fromisoformat(missing_since)).total_seconds()
-                        if elapsed < 900:  # 15-minute grace period
-                            continue
-                        new_status = "failed"
-                else:
-                    # squeue unavailable — skip to avoid false negatives
-                    continue
-
-                if new_status in _TERMINAL and info.get("status") != new_status:
-                    slurm_jobs[job_key]["status"] = new_status
-                    slurm_jobs[job_key].pop("missing_since", None)
-                    dirty = True
-                    print(f"update_boltz_status: {job_key} → {new_status}")
-
-            if dirty:
-                with open(jobs_file, "w") as _f:
-                    _json.dump(slurm_jobs, _f)
-    finally:
-        r.delete(lock_key)
+            import hashlib as _hashlib, shutil as _shutil
+            with open(jobs_file) as _f:
+                _job_info = _json.load(_f).get(job_key, {})
+            msa_cache_targets = _job_info.get("msa_cache_targets", [])
+            if msa_cache_targets:
+                cache_dir = os.getenv(
+                    "BOLTZ_MSA_CACHE_DIR",
+                    os.path.join(os.getenv("SEA_JOB_DIR", "/tmp"), "msa_cache"),
+                )
+                os.makedirs(cache_dir, exist_ok=True)
+                msa_raw_dir = os.path.join(
+                    boltz_dir, job_key, "boltz_out",
+                    f"boltz_results_{job_key}", "msa",
+                    f"{job_key}_unpaired_tmp_env",
+                )
+                uniref = os.path.join(msa_raw_dir, "uniref.a3m")
+                bfd = os.path.join(msa_raw_dir, "bfd.mgnify30.metaeuk30.smag30.a3m")
+                if os.path.exists(uniref):
+                    # Merge uniref + bfd into a single a3m (standard ColabFold format)
+                    merged_lines = []
+                    for src in [uniref, bfd]:
+                        if os.path.exists(src):
+                            with open(src) as _f:
+                                merged_lines.append(_f.read())
+                    merged = "".join(merged_lines)
+                    for target in msa_cache_targets:
+                        dest = os.path.join(cache_dir, f"{target['seq_hash']}.a3m")
+                        if not os.path.exists(dest):
+                            with open(dest, "w") as _f:
+                                _f.write(merged)
+                            print(f"run_boltz_job: cached MSA for {target['label']} → {dest}")
+        except Exception as e:
+            print(f"run_boltz_job: MSA cache population failed for {job_key}: {e}")
 
 
 celery.conf.beat_schedule = {
     'daily-cleanup-task': {
         'task': 'main.cleanup_task',
         'schedule': crontab(minute=10, hour='*'),  # Run every hour
-    },
-    'drain-boltz-queue': {
-        'task': 'boltz.drain_queue',
-        'schedule': 30.0,  # every 30 seconds
-    },
-    'update-boltz-status': {
-        'task': 'boltz.update_status',
-        'schedule': 60.0,  # every 60 seconds
     },
 }
 

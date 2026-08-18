@@ -1,4 +1,9 @@
 .env
 *.pyc
-__pycache__
+**/__pycache__
 redis-data
+**/node_modules
+**/.git
+frontend/dist
+frontend/build
+.DS_Store

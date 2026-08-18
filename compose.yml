@@ -77,6 +77,27 @@ services:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
 
+#### BOLTZ WORKER (concurrency=1 — one job at a time) ####
+  boltzworker:
+    container_name: sea-boltzworker
+    restart: unless-stopped
+    shm_size: '8gb'
+    networks:
+      - ocean
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - SEA_JOB_DIR=${SEA_JOB_DIR}
+      - BOLTZ_BIN=${BOLTZ_BIN}
+      - BOLTZ_MAX_QUEUED=${BOLTZ_MAX_QUEUED:-10}
+    volumes:
+      - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
+      - /scratch/sea_boltz:/scratch/sea_boltz
+    command: celery -A backend.app.celery_worker worker -n boltzworker -Q boltz --concurrency=1 --loglevel=info
+
 
 
 ##### ----- NETWORKS ------ #####
