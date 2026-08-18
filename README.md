@@ -94,7 +94,7 @@ uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --reload
 ```
 
 ```bash
-celery -A backend.app.celery_worker worker --beat -s /tmp/sea-celerybeat-schedule --loglevel=info --concurrency=40 --max-tasks-per-child=60
+celery -A backend.app.celery_worker worker --beat -s /tmp/sea-celerybeat-schedule --loglevel=info --concurrency=5 --max-tasks-per-child=10
 ```
 
 ### 4. Start the frontend dev server

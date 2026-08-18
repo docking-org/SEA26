@@ -361,21 +361,27 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 				bar.write("  Note: {} has {} protein chains; affinity is trained on "
 					"single-chain complexes -- interpret with care.".format(job_name, n_chain))
 
+			## Cache flags on local
+			cache_flag = '--cache /scratch/sea_boltz '
 			## Per-job run script -- paths are quoted so folders with spaces work
 			server_flag = "--use_msa_server " if msa_mode == "server" else ""
-			cmd = "{bin} predict {yaml} --out_dir {out} {server}{extra}".format(
+			cmd = "{bin} predict {yaml} --out_dir {out} {server}{cache}{extra}".format(
 				bin    = boltz_bin,
 				yaml   = shlex.quote(os.path.abspath(yaml_path)),
 				out    = shlex.quote(os.path.abspath(os.path.join(job_dir, boltz_out_dir))),
 				server = server_flag,
+				cache  = cache_flag,
 				extra  = boltz_extra_args).strip()
+			log_path = os.path.join(job_dir, "{}.log".format(job_name))
+			print(log_path)
 			run_path = os.path.join(job_dir, "run.sh")
 			with open(run_path, "w") as fh :
 				fh.write(
 					"#!/usr/bin/env bash\n"
 					"set -euo pipefail\n"
 					"export LD_LIBRARY_PATH=/nfs/home/khtang/.conda/envs/sea25/lib\n"
-					"{}\n".format(cmd)
+					"export CUDA_VISIBLE_DEVICES=2\n"
+					"{} 2>&1 | tee {}\n".format(cmd, shlex.quote(os.path.abspath(log_path)))
 				)
 			os.chmod(run_path, 0o755)
 			job_scripts.append(os.path.abspath(run_path))
