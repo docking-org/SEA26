@@ -74,7 +74,7 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=30 --max-tasks-per-child=10
+    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=10 --max-tasks-per-child=10
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
