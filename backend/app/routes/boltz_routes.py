@@ -26,10 +26,14 @@ router = APIRouter()
 _TERMINAL_STATES = {"done", "failed"}
 
 
-def _verify_captcha(body: dict):
+def _verify_captcha(body: dict, request: Request = None):
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
     if not hmac_secret:
         return
+    if request is not None:
+        api_key_secret = os.getenv("SEA_API_KEY")
+        if api_key_secret and request.headers.get("X-API-Key") == api_key_secret:
+            return
     altcha_payload = body.get("altcha")
     if not altcha_payload:
         raise HTTPException(status_code=400, detail="CAPTCHA verification required")
@@ -163,7 +167,7 @@ async def boltz_submit(request: Request):
     if not task_id or not chembl_id:
         raise HTTPException(status_code=400, detail="task_id and chembl_id required")
 
-    _verify_captcha(body)
+    _verify_captcha(body, request)
 
     boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
     manifest_path = f"{boltz_dir}/boltz_manifest.tsv"
@@ -203,7 +207,7 @@ async def boltz_submit_from_heatmap(request: Request):
     if not task_id or not chembl_id or not smiles:
         raise HTTPException(status_code=400, detail="task_id, chembl_id, and smiles required")
 
-    _verify_captcha(body)
+    _verify_captcha(body, request)
 
     lig_safe = sanitize(ligand_name)
     job_name = f"{sanitize(chembl_id)}__{lig_safe}"

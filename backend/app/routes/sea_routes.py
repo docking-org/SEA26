@@ -52,8 +52,12 @@ async def submit_task(request: Request) -> dict[str, str]:
         lines_detail = "; ".join([f"Line {line_num}: '{line}'" for line_num, line in invalid_smiles])
         raise HTTPException(status_code=400, detail=f"Invalid SMILES input. Please check the following lines: {lines_detail}")
 
+    api_key = request.headers.get("X-API-Key")
+    api_key_secret = os.getenv("SEA_API_KEY")
+    is_api_client = api_key_secret and api_key == api_key_secret
+
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
-    if hmac_secret:
+    if hmac_secret and not is_api_client:
         altcha_payload = input_data.get("altcha")
         if not altcha_payload:
             raise HTTPException(status_code=400, detail="CAPTCHA verification required")
