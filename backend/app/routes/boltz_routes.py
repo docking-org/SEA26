@@ -326,7 +326,7 @@ async def boltz_submit_from_heatmap(request: Request):
     os.chmod(run_path, 0o755)
 
     # Pre-assign task UUID so we only need one locked write (no second save needed)
-    task_uuid = str(uuid.uuid4())
+    task_uuid = str(uuid.uuid4().hex[:12])
     with _boltz_jobs_lock(jobs_file):
         # Re-check de-dup inside lock to close the TOCTOU window
         existing = _load_boltz_jobs(jobs_file)
