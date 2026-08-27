@@ -2,7 +2,9 @@
 *.pyc
 **/__pycache__
 redis-data
+node_modules
 **/node_modules
+.git
 **/.git
 frontend/dist
 frontend/build

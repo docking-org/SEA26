@@ -65,7 +65,7 @@ async def submit_task(request: Request) -> dict[str, str]:
         if not verified:
             raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
 
-    task_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4().hex[:12])
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
     _mkdir_(job_dir)
     init_progress_file(task_id)
