@@ -197,16 +197,20 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
         try:
             known = get_cached_target(target)
             similarity = known_test_tc(known, data_test, fpSize)
+            similarity = np.round(similarity, 4)
+
+            best_tc = float(np.max(similarity)) if similarity.size > 0 else 0.0
+
             z_score, p_value, log_sf, raw_score, size = sea_score(
                 similarity, tc_cutoff, mean_slope, mean_intercept,
                 std_a, std_b, std_c,
                 gev_c=gev_c, gev_loc=gev_loc, gev_scale=gev_scale)
             target_name = known["target_name"].iloc[0]
-            results.append((target_name, z_score, p_value))
+            results.append((target_name, z_score, p_value, best_tc))
         except Exception as e:
             print(f"Error processing target {target}: {e}")
             target_name = os.path.basename(target).split(".")[0]
-            results.append((target_name, None, None))
+            results.append((target_name, None, None, None))
 
         # Update progress atomically via Redis
         completed = r.incr(f"progress:{parent_task_id}:completed_cnt")
@@ -225,7 +229,6 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
         )
         if is_done:
             r.delete(f"progress:{parent_task_id}:completed_cnt")
-
     return results
 
 
@@ -282,8 +285,8 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
         # Pair results with their target files and filter out failures
         valid = [
-            (name, z, p, chembl_path)
-            for (name, z, p), chembl_path in zip(group_results, list_chembl)
+            (name, z, p, chembl_path, tc)
+            for (name, z, p, tc), chembl_path in zip(group_results, list_chembl)
             if z is not None and p is not None
         ]
         n_failed = len(group_results) - len(valid)
@@ -298,7 +301,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
             release_job_slot(task_id)
             return {"task_id": task_id, "status": "ERROR"}
 
-        target_name_list, z_score_summary, p_value_summary, valid_chembl = zip(*valid)
+        target_name_list, z_score_summary, p_value_summary, valid_chembl, best_tc_summary = zip(*valid)
 
         list_chembl_names = []
         for item in valid_chembl:
@@ -311,6 +314,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         sea_result["Z_score"] = np.round(z_score_summary, 2)
         sea_result["p(P_value)"] = np.round(-np.log10(np.array(p_value_summary)), 4)
         sea_result["Target_Name"] = target_name_list
+        sea_result['MaxTc'] = np.round(best_tc_summary, 2)
 
         # Annotate with Uniprot accession and sequence
         lookup_file = os.path.join(data_folder, "uniprot_chembl_id.tsv")
@@ -330,9 +334,11 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
         sea_result = sea_result.sort_values(by="p(P_value)", ignore_index=True)
         n_before_filter = len(sea_result)
-        sea_result = sea_result[sea_result["p(P_value)"] > 3]
-        _write_log_(phase1_log, f"Significant hits (p(P_value) > 3): {len(sea_result)} of {n_before_filter}")
-        sea_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
+        filtered_result = sea_result[(sea_result["p(P_value)"] > float(os.getenv("PPVALUE_CUTOFF"))) | (sea_result["MaxTc"] > float(os.getenv("TC_CUTOFF")))]
+        # order result by z-score descending
+        filtered_result = filtered_result.sort_values(by="Z_score", ascending=False, ignore_index=True)
+        _write_log_(phase1_log, f"Significant hits ): {len(filtered_result)} of {n_before_filter}")
+        filtered_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
 
         _write_log_(phase1_log, "Phase 1 completed: sea_result.tsv written")
         save_progress(task_id, {
@@ -363,11 +369,13 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         n_test = len(test_names)
         _write_log_(phase2_log, f"Query compounds: {n_test} ({', '.join(test_names)})")
 
+        # get best Tc for each target
+
         phase2_errors = 0
-        for idx in range(sea_result.shape[0]):
+        for idx in range(filtered_result.shape[0]):
             try:
-                target_chembl_id = sea_result["Target_Chembl_ID"].iloc[idx]
-                species = sea_result["Target_Species"].iloc[idx]
+                target_chembl_id = filtered_result["Target_Chembl_ID"].iloc[idx]
+                species = filtered_result["Target_Species"].iloc[idx]
                 known = get_cached_target(f"{data_folder}/{species}/{target_chembl_id}.tsv")
                 similarity = known_test_tc(known, data_test, fpSize=2048)
                 sim_rounded = np.round(similarity, 4)
@@ -391,7 +399,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                     "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
                 })
                 best_similarity = best_similarity.sort_values(by=["Tanimoto_Coefficient"], ascending=False, ignore_index=True)
-                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= float(os.getenv("TC_CUTOFF", "0.28"))]
+                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] > float(os.getenv("TC_CUTOFF"))]
                 best_similarity.to_csv(f"{save_folder}/best_similar_{target_cid}.tsv", sep="\t", index=False)
 
                 # Top 10 similarity matrix — use argpartition instead of full sort
@@ -467,6 +475,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         heatmap_result = []
         for (name, smiles), hits in grouped_dict.items():
             grouped_target_hits = {}
+
             for hit in hits:
                 tkey = f"{hit["Target_ChEMBL_ID"]}:{hit["Target_Name"]}"
                 if tkey not in grouped_target_hits:

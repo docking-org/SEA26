@@ -150,6 +150,7 @@ async def _submit_sea_job(task_id: str, input_data: str):
                 "total_targets": total,
                 "progress": 0,
                 "group_id": result.id,
+                "sea_results" : [],
             },
             state="RUNNING",
         )

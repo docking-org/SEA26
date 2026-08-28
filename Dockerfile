@@ -15,11 +15,8 @@ RUN npm run build
 # Backend build stage
 FROM condaforge/miniforge3:latest as backend
 WORKDIR /home/sea
-RUN apt-get update && apt-get install -y curl
+RUN apt-get update && apt-get install -y curl gcc g++ git
 
-
-RUN apt-get install -y gcc g++ 
-RUN apt-get install -y git
 
 ADD requirements.txt run.sh ./
 RUN conda create -c conda-forge -n sea25 rdkit python=3.12 -y
