@@ -552,6 +552,7 @@ export default function Result() {
                                     'Target_Species',
                                     'Z_score',
                                     'p(P_value)',
+                                    'MaxTc'
                                 ];
                                 const columns = displayColumns.filter((col) => col in result[0]);
                                 return (
