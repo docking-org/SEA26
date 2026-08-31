@@ -9,6 +9,7 @@ export default function Result() {
     const targetChemblId = searchParams.get('targetChemblId') || '';
     const [targetName, setTargetName] = useState('');
     const [Uniprot_ID, setUniprot_ID] = useState('');
+    const [Uniprot_Accession, setUniprot_Accession] = useState('');
     const [species, setSpecies] = useState('');
     const [percent1Done, setPercent1Done] = useState(0);
     const [result, setResult] = useState([]);
@@ -19,6 +20,8 @@ export default function Result() {
     const [hoveredCell, setHoveredCell] = useState(null);
     const [sortBy, setSortBy] = useState('score');
     const [sortDirection, setSortDirection] = useState('desc');
+    const [resultSortBy, setResultSortBy] = useState('p(P_value)');
+    const [resultSortDir, setResultSortDir] = useState('desc');
     const [activeButton, setActiveButton] = useState(false);
     const [taskStatus, setTaskStatus] = useState(null);
     const [errorMessage, setErrorMessage] = useState(null);
@@ -134,6 +137,26 @@ export default function Result() {
 
 
 
+    const SORTABLE_RESULT_COLS = new Set(['MaxTc', 'Z_score', 'p(P_value)']);
+
+    function handleResultSort(column) {
+        if (resultSortBy === column) {
+            setResultSortDir(prev => prev === 'asc' ? 'desc' : 'asc');
+        } else {
+            setResultSortBy(column);
+            setResultSortDir('desc');
+        }
+    }
+
+    const sortedResult = useMemo(() => {
+        if (!result || result.length === 0) return result;
+        return [...result].sort((a, b) => {
+            const av = parseFloat(a[resultSortBy]);
+            const bv = parseFloat(b[resultSortBy]);
+            return resultSortDir === 'desc' ? bv - av : av - bv;
+        });
+    }, [result, resultSortBy, resultSortDir]);
+
     function handleSort(column) {
         if (sortBy === column) {
             setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
@@ -247,6 +270,7 @@ export default function Result() {
                     if (match) {
                         setTargetName(match.Target_Name || '');
                         setUniprot_ID(match.Uniprot_ID || '');
+                        setUniprot_Accession(match.Uniprot_Accession || '');
                         setSpecies(match.Target_Species || '');
                     }
                 }
@@ -323,6 +347,7 @@ export default function Result() {
                                 <p><span className="font-semibold">Target ChEMBL ID:</span> {targetChemblId}</p>
                                 <p><span className="font-semibold">Target Name:</span> {targetName}</p>
                                 <p><span className="font-semibold">Uniprot ID:</span> {Uniprot_ID}</p>
+                                <p><span className="font-semibold">Uniprot Accession:</span> {Uniprot_Accession}</p>
                                 <p><span className="font-semibold">Species:</span> {species}</p>
                             </div>
                         </div>
@@ -549,6 +574,7 @@ export default function Result() {
                                     'Target_Chembl_ID',
                                     'Target_Name',
                                     'Uniprot_ID',
+                                    'Uniprot_Accession',
                                     'Target_Species',
                                     'Z_score',
                                     'p(P_value)',
@@ -562,15 +588,20 @@ export default function Result() {
                                                 {columns.map((key) => (
                                                     <th
                                                         key={key}
-                                                        className="px-2 py-2 sm:px-4 text-left text-xs sm:text-sm font-bold text-blue-700 uppercase tracking-wider border-b"
+                                                        onClick={() => SORTABLE_RESULT_COLS.has(key) && handleResultSort(key)}
+                                                        className={`px-2 py-2 sm:px-4 text-left text-xs sm:text-sm font-bold text-blue-700 uppercase tracking-wider border-b ${SORTABLE_RESULT_COLS.has(key) ? 'cursor-pointer select-none hover:bg-blue-200' : ''}`}
                                                     >
-                                                        {key}
+                                                        {key}{SORTABLE_RESULT_COLS.has(key) && (
+                                                            <span className="ml-1" style={{ opacity: resultSortBy === key ? 1 : 0.3 }}>
+                                                                {resultSortBy === key ? (resultSortDir === 'desc' ? '▼' : '▲') : '▼'}
+                                                            </span>
+                                                        )}
                                                     </th>
                                                 ))}
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {result.map((item, index) => (
+                                            {sortedResult.map((item, index) => (
                                                 <tr
                                                     key={index}
                                                     className={index % 2 === 0 ? "bg-blue-50" : "bg-white"}

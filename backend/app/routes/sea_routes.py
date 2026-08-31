@@ -115,7 +115,7 @@ async def _submit_sea_job(task_id: str, input_data: str):
         save_progress(task_id, {"status": "PENDING", "progress": 0, "total_targets": total})
 
         smiles_key = f"input:{task_id}"
-        redis_cache.setex(smiles_key, 3600, pickle.dumps(smiles_test))
+        redis_cache.setex(smiles_key, 86400, pickle.dumps(smiles_test))
 
         CHUNK_SIZE = 100
         target_chunks = [list_chembl[i:i + CHUNK_SIZE] for i in range(0, len(list_chembl), CHUNK_SIZE)]

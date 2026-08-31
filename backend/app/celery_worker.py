@@ -91,6 +91,9 @@ def warm_target_cache():
     if not data_folder:
         print("warm_target_cache: SEA_DATA_FOLDER not set, skipping")
         return {"total_files": 0, "cached": 0, "errors": 0}
+    if not os.path.isdir(data_folder):
+        print(f"warm_target_cache: SEA_DATA_FOLDER does not exist: {data_folder}, skipping")
+        return {"total_files": 0, "cached": 0, "errors": 0}
     print(f"Warming Redis cache from {data_folder}...")
 
     # Find all .tsv files
@@ -317,16 +320,17 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         sea_result['MaxTc'] = np.round(best_tc_summary, 2)
 
         # Annotate with Uniprot accession and sequence
-        lookup_file = os.path.join(data_folder, "uniprot_chembl_id.tsv")
+        lookup_file = os.path.join(data_folder, "uniprot_chembl_id_uniprot_info.tsv")
         if os.path.exists(lookup_file):
             lookup = pd.read_csv(lookup_file, sep="\t", index_col=0)
             sea_result = sea_result.merge(
-                lookup[["target_chembl_id", "uniprot_accession", "sequence"]],
+                lookup[["target_chembl_id", "uniprot_accession", "uniprot_id", "sequence"]],
                 left_on="Target_Chembl_ID", right_on="target_chembl_id", how="left",
             )
             sea_result = sea_result.drop(columns=["target_chembl_id"])
             sea_result = sea_result.rename(columns={
-                "uniprot_accession": "Uniprot_ID",
+                "uniprot_accession": "Uniprot_Accession",
+                "uniprot_id": "Uniprot_ID",
                 "sequence": "Sequence",
             })
         else:

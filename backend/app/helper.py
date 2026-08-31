@@ -335,22 +335,24 @@ def add_uniprot_info(sea_result, lookup_file) :
 	'''
 	sea_result	pd.DataFrame	must have a "CHEMBL ID" column
 	lookup_file	str		path to uniprot_chembl_id.tsv
-	Returns sea_result with two extra columns: "Uniprot ID" and "Sequence".
+	Returns sea_result with 3 extra columns: "Uniprot ID", "Uniprot Accession" and "Sequence".
 	No-op (with warning + NaN columns) if the lookup file is missing.
 	'''
 	if not os.path.exists(lookup_file) :
 		print("Warning: lookup file {} not found; skipping Uniprot annotation".format(lookup_file))
 		sea_result["Uniprot ID"] = np.nan
+		sea_result["Uniprot Accession"] = np.nan
 		sea_result["Sequence"]   = np.nan
 		return sea_result
 	lookup = pd.read_csv(lookup_file, sep = "\t", index_col = 0)
 	sea_result = sea_result.merge(
-		lookup[["target_chembl_id", "uniprot_accession", "sequence"]],
+		lookup[["target_chembl_id", "uniprot_accession", "uniprot_id", "sequence"]],
 		left_on = "CHEMBL ID", right_on = "target_chembl_id", how = "left",
 	)
 	sea_result = sea_result.drop(columns = ["target_chembl_id"])
 	sea_result = sea_result.rename(columns = {
-		"uniprot_accession" : "Uniprot ID",
+		"uniprot_accession" : "Uniprot Accession",
+		"uniprot_id"        : "Uniprot ID",
 		"sequence"          : "Sequence",
 	})
 	return sea_result
@@ -695,7 +697,7 @@ def sea_analysis_with_multiprocessing(testFile, list_chembl,
 		std_a = 0.0047, std_b = 0.6409, std_c = 0.4999,
 		gev_c = 0.0, gev_loc = 0.0, gev_scale = 1.0,
 		p_threshold = 0.01, high_tc_threshold = 0.95,
-		lookup_file = "uniprot_chembl_id.tsv",
+		lookup_file = "uniprot_chembl_id_uniprot_info.tsv",
 		radius = 2, fpSize = 2048, useFeatures = False, task = None) :
 	task.update_state(state='PROGRESS', meta={'status': 'Preparing test compounds...'}) if task else None
 	with open(testFile, "r") as f:

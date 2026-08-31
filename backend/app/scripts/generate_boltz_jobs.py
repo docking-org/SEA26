@@ -263,7 +263,7 @@ def write_yaml(yaml_path, protein_chains, smiles, msa_mode, msa_dir, predict_aff
 
 def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa_mode = "server",
 		msa_dir = "msa", predict_affinity = True, boltz_out_dir = "boltz_out", boltz_extra_args = "",
-		lookup_file = "uniprot_chembl_id.tsv", stoich_overrides = {}, auto_complex = True,
+		lookup_file = "uniprot_chembl_id_uniprot_info.tsv", stoich_overrides = {}, auto_complex = True,
 		log_file = None, boltz_bin = "/nfs/home/khtang/.conda/envs/sea25/bin/boltz") :
 	'''
 	result_dir	str	SEA result folder (result_<base>/)
@@ -276,7 +276,7 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 	predict_affinity boolean	add a binding affinity property for the ligand
 	boltz_out_dir	str	Boltz-2 output sub-folder inside each job
 	boltz_extra_args str	extra CLI arguments passed to `boltz predict`
-	lookup_file	str	uniprot_chembl_id.tsv (resolves partner accessions)
+	lookup_file	str	uniprot_chembl_id_uniprot_info.tsv (resolves partner accessions)
 	stoich_overrides dict	per CHEMBL ID assembly overrides
 	auto_complex	boolean	fold several lookup sequences together as a complex
 
@@ -321,7 +321,8 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 	for idxT, chembl_id in enumerate(bar) :
 		rows      = targets[targets["Target_Chembl_ID"].astype(str) == chembl_id]
 		tname     = rows["Target_Name"].tolist()[0] if has_name    else ""
-		uniprot   = rows["Uniprot_ID"].tolist()[0]  if has_uniprot else ""
+		uniprot_id   = rows["Uniprot_ID"].tolist()[0]  if has_uniprot else ""
+		uniprot_accession = rows["Uniprot_Accession"].tolist()[0] if has_uniprot else ""
 
 		seqs     = rows["Sequence"].tolist()
 		accs     = rows["Uniprot_ID"].tolist() if has_uniprot else [None] * len(seqs)
@@ -388,7 +389,8 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 
 			m_job.append(job_name)
 			m_chembl.append(chembl_id)
-			m_uniprot.append(uniprot)
+			m_uniprot.append(uniprot_id)
+			m_uniprot_accession.append(uniprot_accession)
 			m_tname.append(tname)
 			m_nchain.append(n_chain)
 			m_labels.append(labels)
@@ -420,7 +422,8 @@ def generate_jobs(result_dir, testFile, out_dir, tc_min = 0.0, top_n = None, msa
 	manifest = pd.DataFrame()
 	manifest["job"]            = m_job
 	manifest["CHEMBL ID"]      = m_chembl
-	manifest["Uniprot ID"]     = m_uniprot
+	manifest["Uniprot ID"]     = m_uniprot_id
+	manifest["Uniprot Accession"] = m_uniprot_accession
 	manifest["Target name"]    = m_tname
 	manifest["Protein chains"] = m_nchain
 	manifest["Chain labels"]   = m_labels
