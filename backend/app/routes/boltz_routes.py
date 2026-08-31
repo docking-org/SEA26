@@ -135,7 +135,7 @@ async def generate_boltz_jobs_endpoint(request: Request):
     result_dir = f"{job_root}/{task_id}/sea_output"
     boltz_out = f"{job_root}/{task_id}/boltz_jobs"
     test_file = f"{job_root}/{task_id}/input.smi"
-    lookup_file = os.path.join(os.getenv("SEA_DATA_FOLDER"), "uniprot_chembl_id.tsv")
+    lookup_file = os.path.join(os.getenv("SEA_DATA_FOLDER"), "uniprot_chembl_id_uniprot_info.tsv")
     log_file = f"{job_root}/{task_id}/logs/boltz.log"
 
     try:
