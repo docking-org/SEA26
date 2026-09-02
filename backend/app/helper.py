@@ -182,16 +182,16 @@ def collect_fingerprint(smiles, radius = 2, fpSize = 1024, useFeatures = False) 
 
 ## Calculate tanimoto score between two sets of compounds
 def calc_tanimoto_sets(mol_setA, mol_setB) :
-	mol_setA = np.asarray(mol_setA, dtype=np.float32)
-	mol_setB = np.asarray(mol_setB, dtype=np.float32)
+	mol_setA = np.asarray(mol_setA)
+	mol_setB = np.asarray(mol_setB)
 
 	a_and_b = mol_setA @ mol_setB.T
 
-	size_A = np.sum(mol_setA, axis=1, keepdims=True)   # (n_A, 1)
-	size_B = np.sum(mol_setB, axis=1, keepdims=True).T  # (1, n_B)
+	size_A = np.sum(mol_setA, axis=1)[:, None]  # (n_A, 1)
+	size_B = np.sum(mol_setB, axis=1)[None, :]  # (1, n_B)
 
 	a_or_b = size_A + size_B - a_and_b
-	return (a_and_b / a_or_b).astype(np.float64)
+	return a_and_b / a_or_b
 
 ## Calculate tanimoto score between one set of compounds and one reference smile
 def calc_tanimoto_ref(mol_setA, mol_ref) :
@@ -228,8 +228,9 @@ def known_test_tc(known, test, fpSize) :
 	fpSize:		int		size of fingerprint
 	'''
 	fp_cols_str = [str(i) for i in range(fpSize)]
-	fp_known = known[fp_cols_str].values.astype(np.float32)
-	fp_test = test[np.arange(fpSize)].values.astype(np.float32)
+	fp_cols_int = list(range(fpSize))
+	fp_known = known[fp_cols_str].values
+	fp_test  = test[fp_cols_int].values
 
 	return calc_tanimoto_sets(fp_known, fp_test)
 
