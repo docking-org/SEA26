@@ -6,6 +6,8 @@ import glob
 import time
 import asyncio
 import traceback
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
 import redis
@@ -16,6 +18,9 @@ from dotenv import load_dotenv, find_dotenv
 import os
 
 load_dotenv(find_dotenv())
+
+P_VALUE_THRESHOLD = -np.log10(float(os.getenv('P_THRESHOLD', '0.01')))  # p-value cutoff for significance
+HIGH_TC_THRESHOLD = float(os.getenv('HIGH_TC_THRESHOLD', 0.95))  # MaxTc cutoff for high-similarity hits
 
 
 celery = Celery(
@@ -209,7 +214,7 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
                 std_a, std_b, std_c,
                 gev_c=gev_c, gev_loc=gev_loc, gev_scale=gev_scale)
             target_name = known["target_name"].iloc[0]
-            results.append((target_name, z_score, p_value, best_tc))
+            results.append((target_name, z_score, log_sf, best_tc))
         except Exception as e:
             print(f"Error processing target {target}: {e}")
             target_name = os.path.basename(target).split(".")[0]
@@ -288,9 +293,9 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
         # Pair results with their target files and filter out failures
         valid = [
-            (name, z, p, chembl_path, tc)
-            for (name, z, p, tc), chembl_path in zip(group_results, list_chembl)
-            if z is not None and p is not None
+            (name, z, log_sf, chembl_path, tc)
+            for (name, z, log_sf, tc), chembl_path in zip(group_results, list_chembl)
+            if z is not None and log_sf is not None
         ]
         n_failed = len(group_results) - len(valid)
         _write_log_(phase1_log, f"Scored targets: {len(valid)} valid, {n_failed} failed (z/p-value is None)")
@@ -304,7 +309,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
             release_job_slot(task_id)
             return {"task_id": task_id, "status": "ERROR"}
 
-        target_name_list, z_score_summary, p_value_summary, valid_chembl, best_tc_summary = zip(*valid)
+        target_name_list, z_score_summary, log_sf_summary, valid_chembl, best_tc_summary = zip(*valid)
 
         list_chembl_names = []
         for item in valid_chembl:
@@ -315,7 +320,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         sea_result["Target_Chembl_ID"] = [x.split('/')[1] for x in list_chembl_names]
         sea_result["Target_Species"] = [x.split('/')[0] for x in list_chembl_names]
         sea_result["Z_score"] = np.round(z_score_summary, 2)
-        sea_result["p(P_value)"] = np.round(-np.log10(np.array(p_value_summary)), 4)
+        sea_result["p(P_value)"] = np.round(-np.array(log_sf_summary) / np.log(10), 4)
         sea_result["Target_Name"] = target_name_list
         sea_result['MaxTc'] = np.round(best_tc_summary, 2)
 
@@ -338,7 +343,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
         sea_result = sea_result.sort_values(by="p(P_value)", ignore_index=True)
         n_before_filter = len(sea_result)
-        filtered_result = sea_result[(sea_result["p(P_value)"] > float(os.getenv("PPVALUE_CUTOFF"))) | (sea_result["MaxTc"] > float(os.getenv("TC_CUTOFF")))]
+        filtered_result = sea_result[(sea_result["p(P_value)"] > P_VALUE_THRESHOLD) | (sea_result["MaxTc"] > HIGH_TC_THRESHOLD)]
         # order result by z-score descending
         filtered_result = filtered_result.sort_values(by="Z_score", ascending=False, ignore_index=True)
         _write_log_(phase1_log, f"Significant hits ): {len(filtered_result)} of {n_before_filter}")
@@ -363,89 +368,97 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
     # --- Phase 2: Similarity scores for each hit target ---
     try:
-        n_hit_targets = sea_result.shape[0]
+        n_hit_targets = filtered_result.shape[0]
         _write_log_(phase2_log, f"Phase 2 started: computing similarity scores for {n_hit_targets} hit targets")
-        heatmap_data = []
         data_test, mol_test = get_smiles_property(smiles_test)
-        # Pre-build lookup dict once (used in every target iteration)
         name_to_smiles = dict(zip(data_test["Name"], data_test["SMILES"]))
         test_names = data_test["Name"].tolist()
         n_test = len(test_names)
         _write_log_(phase2_log, f"Query compounds: {n_test} ({', '.join(test_names)})")
 
-        # get best Tc for each target
+        log_lock = threading.Lock()
 
+        def _process_one_target_(idx):
+            row = filtered_result.iloc[idx]
+            target_chembl_id = row["Target_Chembl_ID"]
+            species = row["Target_Species"]
+            known = get_cached_target(f"{data_folder}/{species}/{target_chembl_id}.tsv")
+            similarity = known_test_tc(known, data_test, fpSize=2048)
+            sim_rounded = np.round(similarity, 4)
+            known_ids = known["molecule_chembl_id"].tolist()
+            known_smiles = dict(zip(known["molecule_chembl_id"], known["canonical_smiles"]))
+            target_cid = known["target_chembl_id"].iloc[0]
+            target_nm = known["target_name"].iloc[0]
+
+            # Best similarity per test compound (max over known axis)
+            best_idx = np.argmax(sim_rounded, axis=0)
+            best_tc_vals = np.max(sim_rounded, axis=0)
+            # Ensure arrays for single-compound queries
+            if np.ndim(best_idx) == 0:
+                best_idx = np.array([int(best_idx)])
+                best_tc_vals = np.array([float(best_tc_vals)])
+            best_known_ids = [known_ids[i] for i in best_idx]
+
+            best_similarity = pd.DataFrame({
+                "Name": test_names,
+                "SMILES": data_test["SMILES"].tolist(),
+                "Target_Chembl_Id": target_cid,
+                "Target_Name": target_nm,
+                "Most_similar_known": best_known_ids,
+                "Tanimoto_Coefficient": best_tc_vals,
+                "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
+            })
+            best_similarity = best_similarity.sort_values(by=["Tanimoto_Coefficient"], ascending=False, ignore_index=True)
+            best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] > HIGH_TC_THRESHOLD]
+            best_similarity.to_csv(f"{save_folder}/best_similar_{target_cid}.tsv", sep="\t", index=False)
+
+            # Top 10 similarity matrix
+            k = min(10, sim_rounded.shape[0])
+            summary_tc, summary_ref, summary_known = [], [], []
+            summary_ref_smiles, summary_known_smiles = [], []
+            for idxC in range(n_test):
+                col_vals = sim_rounded[:, idxC] if sim_rounded.ndim > 1 else sim_rounded
+                top_k_idx = np.argpartition(col_vals, -k)[-k:] if k < len(col_vals) else np.arange(len(col_vals))
+                top_k_idx = top_k_idx[np.argsort(col_vals[top_k_idx])[::-1]]
+                top_ids = [known_ids[i] for i in top_k_idx]
+                summary_tc += col_vals[top_k_idx].tolist()
+                summary_ref += [test_names[idxC]] * len(top_k_idx)
+                summary_known += top_ids
+                summary_ref_smiles += [name_to_smiles[test_names[idxC]]] * len(top_k_idx)
+                summary_known_smiles += [known_smiles[kid] for kid in top_ids]
+
+            sim_df = pd.DataFrame({
+                "Name": summary_ref,
+                "Tanimoto_Score": summary_tc,
+                "SMILES": summary_ref_smiles,
+                "Known_Hit_ID": summary_known,
+                "Known_Hit_SMILES": summary_known_smiles,
+            })
+            sim_df = sim_df.sort_values(by=["Name", "Tanimoto_Score"], ascending=[True, False], ignore_index=True)
+            sim_df.to_csv(f"{save_folder}/top10_{target_cid}.tsv", sep="\t", index=False)
+            sim_df["Target_ChEMBL_ID"] = target_cid
+            sim_df["Target_Name"] = target_nm
+
+            with log_lock:
+                _write_log_(phase2_log, f"[{idx+1}/{n_hit_targets}] {target_cid} ({target_nm}): known={len(known_ids)}, max_tc={float(best_tc_vals.max()):.4f}, high_sim_hits={len(best_similarity)}")
+
+            return sim_df.to_dict(orient="records")
+
+        heatmap_data = []
         phase2_errors = 0
-        for idx in range(filtered_result.shape[0]):
-            try:
-                target_chembl_id = filtered_result["Target_Chembl_ID"].iloc[idx]
-                species = filtered_result["Target_Species"].iloc[idx]
-                known = get_cached_target(f"{data_folder}/{species}/{target_chembl_id}.tsv")
-                similarity = known_test_tc(known, data_test, fpSize=2048)
-                sim_rounded = np.round(similarity, 4)
-                known_ids = known["molecule_chembl_id"].tolist()
-                known_smiles = dict(zip(known["molecule_chembl_id"], known["canonical_smiles"]))
-                target_cid = known["target_chembl_id"].iloc[0]
-                target_nm = known["target_name"].iloc[0]
-
-                # Best similarity per test compound (max across known axis)
-                best_idx = np.argmax(sim_rounded, axis=0)
-                best_tc = np.max(sim_rounded, axis=0)
-                best_known_ids = [known_ids[i] for i in best_idx]
-
-                best_similarity = pd.DataFrame({
-                    "Name": test_names,
-                    "SMILES": data_test["SMILES"].tolist(),
-                    "Target_Chembl_Id": target_cid,
-                    "Target_Name": target_nm,
-                    "Most_similar_known": best_known_ids,
-                    "Tanimoto_Coefficient": best_tc,
-                    "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
-                })
-                best_similarity = best_similarity.sort_values(by=["Tanimoto_Coefficient"], ascending=False, ignore_index=True)
-                best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] > float(os.getenv("TC_CUTOFF"))]
-                best_similarity.to_csv(f"{save_folder}/best_similar_{target_cid}.tsv", sep="\t", index=False)
-
-                # Top 10 similarity matrix — use argpartition instead of full sort
-                summary_tc = []
-                summary_ref = []
-                summary_known = []
-                summary_ref_smiles = []
-                summary_known_smiles = []
-                k = min(10, similarity.shape[0])
-                for idxC in range(n_test):
-                    col_vals = sim_rounded[:, idxC]
-                    if k < len(col_vals):
-                        top_k_idx = np.argpartition(col_vals, -k)[-k:]
-                    else:
-                        top_k_idx = np.arange(len(col_vals))
-                    top_k_idx = top_k_idx[np.argsort(col_vals[top_k_idx])[::-1]]
-                    top_tc = col_vals[top_k_idx].tolist()
-                    top_known_ids = [known_ids[i] for i in top_k_idx]
-
-                    summary_tc += top_tc
-                    summary_ref += [test_names[idxC]] * len(top_k_idx)
-                    summary_known += top_known_ids
-                    summary_ref_smiles += [name_to_smiles[test_names[idxC]]] * len(top_k_idx)
-                    summary_known_smiles += [known_smiles[kid] for kid in top_known_ids]
-                similarity_matrix = pd.DataFrame({
-                    "Name": summary_ref,
-                    "Tanimoto_Score": summary_tc,
-                    "SMILES": summary_ref_smiles,
-                    "Known_Hit_ID": summary_known,
-                    "Known_Hit_SMILES": summary_known_smiles,
-                })
-                similarity_matrix = similarity_matrix.sort_values(by=["Name", "Tanimoto_Score"], ascending=[True, False], ignore_index=True)
-                similarity_matrix.to_csv(f"{save_folder}/top10_{target_cid}.tsv", sep="\t", index=False)
-                similarity_matrix['Target_ChEMBL_ID'] = target_cid
-                similarity_matrix['Target_Name'] = target_nm
-                heatmap_data += similarity_matrix.to_dict(orient="records")
-                _write_log_(phase2_log, f"[{idx+1}/{n_hit_targets}] {target_cid} ({target_nm}): known={len(known_ids)}, max_tc={float(best_tc.max()):.4f}, high_sim_hits={len(best_similarity)}")
-            except Exception as e:
-                phase2_errors += 1
-                _write_log_(phase2_log, f"[{idx+1}/{n_hit_targets}] Target error ({target_chembl_id}): {e}\n{traceback.format_exc()}")
-                print(f"Error calculating similarity for target {target_chembl_id}: {e}")
-                continue
+        n_workers = int(os.getenv("PHASE2_WORKERS", "8"))
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_process_one_target_, idx): idx for idx in range(n_hit_targets)}
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    heatmap_data.extend(future.result())
+                except Exception as e:
+                    phase2_errors += 1
+                    target_chembl_id = filtered_result["Target_Chembl_ID"].iloc[idx]
+                    with log_lock:
+                        _write_log_(phase2_log, f"[{idx+1}/{n_hit_targets}] Target error ({target_chembl_id}): {e}\n{traceback.format_exc()}")
+                    print(f"Error calculating similarity for target {target_chembl_id}: {e}")
 
         _write_log_(phase2_log, f"Phase 2 completed: {n_hit_targets - phase2_errors}/{n_hit_targets} targets processed, {phase2_errors} errors")
         save_progress(task_id, {
@@ -568,7 +581,7 @@ def sea_similarity_score( input, target_chembl_id, save_folder,
     best_similarity["Tanimoto_Coefficient"] = list(result.max(axis = 1))
     best_similarity["Known_Hit_SMILES"] = [known.loc["{}".format(name), "canonical_smiles"] for name in result.idxmax(axis = "columns")] 
     best_similarity = best_similarity.sort_values(by = ["Tanimoto_Coefficient"], ascending = False, ignore_index = True)
-    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= float(os.getenv("TC_CUTOFF", "0.28"))]
+    best_similarity = best_similarity[best_similarity["Tanimoto_Coefficient"] >= HIGH_TC_THRESHOLD]
     best_similarity.to_csv(f"{save_folder}/best_similar_{known["target_chembl_id"].tolist()[0]}.tsv", sep = "\t", index = False)
     
     # get top 10 similarity matrix

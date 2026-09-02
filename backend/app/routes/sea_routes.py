@@ -101,7 +101,7 @@ async def _submit_sea_job(task_id: str, input_data: str):
         gev_freq_file = os.path.join(data_folder, "0.29_orig_freq.tsv")
         gev_cache_file = os.path.join(data_folder, f"gev_params_tc{tc_cutoff}_bw{gev_bin_width}.tsv")
 
-        if os.path.exists(gev_freq_file):
+        if os.path.exists(gev_freq_file) or os.path.exists(gev_cache_file):
             gev_c, gev_loc, gev_scale = load_gev_params(gev_freq_file, gev_cache_file, bin_width=gev_bin_width)
         else:
             gev_c, gev_loc, gev_scale = 0.0, 0.0, 1.0
