@@ -190,6 +190,7 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
                            mean_intercept=-0.01631567,
                            std_a=0.0047, std_b=0.6409, std_c=0.4999,
                            gev_c=0.0, gev_loc=0.0, gev_scale=1.0,
+                           p_threshold=0.01, high_tc_threshold=0.95,
                            radius=2, fpSize=2048, useFeatures=False):
     """Process a batch of targets in a single Celery task."""
     # Retrieve shared input from Redis (stored once, not per-task)
@@ -214,11 +215,13 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
                 std_a, std_b, std_c,
                 gev_c=gev_c, gev_loc=gev_loc, gev_scale=gev_scale)
             target_name = known["target_name"].iloc[0]
-            results.append((target_name, z_score, log_sf, best_tc))
+            uniprot_id = known["uniprot_id"].iloc[0] if "uniprot_id" in known.columns else None
+            uniprot_accession = known["target_accession"].iloc[0] if "target_accession" in known.columns else None
+            results.append((target_name, z_score, p_value, log_sf, best_tc, uniprot_id, uniprot_accession))
         except Exception as e:
             print(f"Error processing target {target}: {e}")
             target_name = os.path.basename(target).split(".")[0]
-            results.append((target_name, None, None, None))
+            results.append((target_name, None, None, None, None, None, None))
 
         # Update progress atomically via Redis
         completed = r.incr(f"progress:{parent_task_id}:completed_cnt")
@@ -293,8 +296,8 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
         # Pair results with their target files and filter out failures
         valid = [
-            (name, z, log_sf, chembl_path, tc)
-            for (name, z, log_sf, tc), chembl_path in zip(group_results, list_chembl)
+            (name, z, p, log_sf, chembl_path, tc, uid, uacc)
+            for (name, z, p, log_sf, tc, uid, uacc), chembl_path in zip(group_results, list_chembl)
             if z is not None and log_sf is not None
         ]
         n_failed = len(group_results) - len(valid)
@@ -309,7 +312,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
             release_job_slot(task_id)
             return {"task_id": task_id, "status": "ERROR"}
 
-        target_name_list, z_score_summary, log_sf_summary, valid_chembl, best_tc_summary = zip(*valid)
+        target_name_list, z_score_summary, p_value_summary, log_sf_summary, valid_chembl, best_tc_summary, uniprot_id_list, uniprot_accession_list = zip(*valid)
 
         list_chembl_names = []
         for item in valid_chembl:
@@ -320,32 +323,26 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         sea_result["Target_Chembl_ID"] = [x.split('/')[1] for x in list_chembl_names]
         sea_result["Target_Species"] = [x.split('/')[0] for x in list_chembl_names]
         sea_result["Z_score"] = np.round(z_score_summary, 2)
+        sea_result["p_value"] = list(p_value_summary)
         sea_result["p(P_value)"] = np.round(-np.array(log_sf_summary) / np.log(10), 4)
         sea_result["Target_Name"] = target_name_list
         sea_result['MaxTc'] = np.round(best_tc_summary, 2)
+        sea_result["Uniprot_ID"] = list(uniprot_id_list)
+        sea_result["Uniprot_Accession"] = list(uniprot_accession_list)
 
-        # Annotate with Uniprot accession and sequence
-        lookup_file = os.path.join(data_folder, "uniprot_chembl_id_uniprot_info.tsv")
-        if os.path.exists(lookup_file):
-            lookup = pd.read_csv(lookup_file, sep="\t", index_col=0)
-            sea_result = sea_result.merge(
-                lookup[["target_chembl_id", "uniprot_accession", "uniprot_id", "sequence"]],
-                left_on="Target_Chembl_ID", right_on="target_chembl_id", how="left",
-            )
-            sea_result = sea_result.drop(columns=["target_chembl_id"])
-            sea_result = sea_result.rename(columns={
-                "uniprot_accession": "Uniprot_Accession",
-                "uniprot_id": "Uniprot_ID",
-                "sequence": "Sequence",
-            })
-        else:
-            _write_log_(phase1_log, f"Warning: Uniprot lookup file not found at {lookup_file}")
+        sea_result = sea_result.sort_values(by="p_value", ignore_index=True)
 
-        sea_result = sea_result.sort_values(by="p(P_value)", ignore_index=True)
         n_before_filter = len(sea_result)
-        filtered_result = sea_result[(sea_result["p(P_value)"] > P_VALUE_THRESHOLD) | (sea_result["MaxTc"] > HIGH_TC_THRESHOLD)]
+        filtered_result = sea_result[(sea_result["p(P_value)"] >= P_VALUE_THRESHOLD) | (sea_result["MaxTc"] > HIGH_TC_THRESHOLD)]
         # order result by z-score descending
         filtered_result = filtered_result.sort_values(by="Z_score", ascending=False, ignore_index=True)
+
+        # Format p_value as scientific notation for output files
+        sea_result["p_value"] = sea_result["p_value"].apply(lambda v: f"{v:.4e}")
+        filtered_result = filtered_result.copy()
+        filtered_result["p_value"] = filtered_result["p_value"].apply(lambda v: f"{v:.4e}")
+
+        sea_result.to_csv(f"{save_folder}/sea_result_all.tsv", sep="\t", index=False)
         _write_log_(phase1_log, f"Significant hits ): {len(filtered_result)} of {n_before_filter}")
         filtered_result.to_csv(f"{save_folder}/sea_result.tsv", sep="\t", index=False)
 
@@ -446,7 +443,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
         heatmap_data = []
         phase2_errors = 0
-        n_workers = int(os.getenv("PHASE2_WORKERS", "8"))
+        n_workers = int(os.getenv("PHASE2_WORKERS", "20"))
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(_process_one_target_, idx): idx for idx in range(n_hit_targets)}
             for future in as_completed(futures):

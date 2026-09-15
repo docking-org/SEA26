@@ -14,13 +14,14 @@ export default function Result() {
     const [percent1Done, setPercent1Done] = useState(0);
     const [result, setResult] = useState([]);
     const [queryCompounds, setQueryCompounds] = useState([]);
+    const [inputCompounds, setInputCompounds] = useState([]);
     const [filteredData, setFilteredData] = useState([]);
     const [heatmapData, setHeatmapData] = useState(null);
     const [seaData, setSeaData] = useState(null);
     const [hoveredCell, setHoveredCell] = useState(null);
     const [sortBy, setSortBy] = useState('score');
     const [sortDirection, setSortDirection] = useState('desc');
-    const [resultSortBy, setResultSortBy] = useState('p(P_value)');
+    const [resultSortBy, setResultSortBy] = useState('p_value');
     const [resultSortDir, setResultSortDir] = useState('desc');
     const [activeButton, setActiveButton] = useState(false);
     const [taskStatus, setTaskStatus] = useState(null);
@@ -72,6 +73,19 @@ export default function Result() {
         }
     }, [heatmapData, rdkitReady]);
 
+    useEffect(() => {
+        if (inputCompounds.length > 0 && rdkitReady && window.RDKit) {
+            inputCompounds.forEach((entry) => {
+                const idx = entry.indexOf(' ');
+                const smiles = idx >= 0 ? entry.slice(0, idx) : entry;
+                const compoundId = idx >= 0 ? entry.slice(idx + 1) : entry;
+                if (!moleculeImages[compoundId]) {
+                    generateMoleculeSVG(smiles, compoundId, 200, 200);
+                }
+            });
+        }
+    }, [inputCompounds, rdkitReady]);
+
     async function checkTaskStatus(){
         try {
             const response = await fetch(`/api/result?taskId=${taskId}`);
@@ -81,9 +95,11 @@ export default function Result() {
             if (data.status === 'SUCCESS'){
                 setPercent1Done(100);
                 setResult(data.result);
+                if (data.input) setInputCompounds(data.input);
                 // Cache result in sessionStorage for quick access on revisit
                 try {
                     sessionStorage.setItem(`sea_result_${taskId}`, JSON.stringify(data.result));
+                    if (data.input) sessionStorage.setItem(`sea_input_${taskId}`, JSON.stringify(data.input));
                 } catch (e) {
                     console.warn('Failed to cache result in sessionStorage:', e);
                 }
@@ -137,7 +153,7 @@ export default function Result() {
 
 
 
-    const SORTABLE_RESULT_COLS = new Set(['MaxTc', 'Z_score', 'p(P_value)']);
+    const SORTABLE_RESULT_COLS = new Set(['MaxTc', 'Z_score', 'p_value']);
 
     function handleResultSort(column) {
         if (resultSortBy === column) {
@@ -210,11 +226,12 @@ export default function Result() {
         try {
             const cached = sessionStorage.getItem(`sea_result_${taskId}`);
             if (cached) {
-                const parsed = JSON.parse(cached);
-                setResult(parsed);
+                setResult(JSON.parse(cached));
                 setTaskStatus('SUCCESS');
                 setPercent1Done(100);
             }
+            const cachedInput = sessionStorage.getItem(`sea_input_${taskId}`);
+            if (cachedInput) setInputCompounds(JSON.parse(cachedInput));
         } catch (e) {
             console.warn('Failed to load cached result:', e);
         }
@@ -567,6 +584,46 @@ export default function Result() {
                             Compound VS Targets
                         </a>
                         </div>
+                        {inputCompounds.length > 0 && (
+                            <div className="mt-6">
+                                <h2 className="mb-2 text-xl font-semibold">Input Compounds:</h2>
+                                <div className="overflow-x-auto rounded-lg shadow mb-4">
+                                    <table className="min-w-full divide-y divide-gray-200 bg-white">
+                                        <thead className="bg-green-100">
+                                            <tr>
+                                                <th className="px-4 py-2 text-left text-xs font-bold text-green-700 uppercase tracking-wider border-b">Compound ID</th>
+                                                <th className="px-4 py-2 text-left text-xs font-bold text-green-700 uppercase tracking-wider border-b">SMILES</th>
+                                                <th className="px-4 py-2 text-center text-xs font-bold text-green-700 uppercase tracking-wider border-b">Structure</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {inputCompounds.map((entry, i) => {
+                                                const idx = entry.indexOf(' ');
+                                                const smiles = idx >= 0 ? entry.slice(0, idx) : entry;
+                                                const compoundId = idx >= 0 ? entry.slice(idx + 1) : entry;
+                                                return (
+                                                    <tr key={i} className={i % 2 === 0 ? 'bg-green-50' : 'bg-white'}>
+                                                        <td className="px-4 py-2 text-xs text-gray-700 border-b font-medium">{compoundId}</td>
+                                                        <td className="px-4 py-2 text-xs text-gray-600 border-b font-mono break-all">{smiles}</td>
+                                                        <td className="px-4 py-2 text-center border-b">
+                                                            {moleculeImages[compoundId] ? (
+                                                                <div
+                                                                    className="w-32 h-32 mx-auto overflow-hidden"
+                                                                    style={{ lineHeight: 0 }}
+                                                                    dangerouslySetInnerHTML={{ __html: moleculeImages[compoundId].replace(/<svg /, '<svg style="width:100%;height:100%;" ') }}
+                                                                />
+                                                            ) : (
+                                                                <span className="text-xs text-gray-400">Loading...</span>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
                         <h2 className="mt-6 mb-2 text-xl font-semibold">Results:</h2>
                         <div className="overflow-x-auto rounded-lg shadow">
                             {(() => {
@@ -577,7 +634,7 @@ export default function Result() {
                                     'Uniprot_Accession',
                                     'Target_Species',
                                     'Z_score',
-                                    'p(P_value)',
+                                    'p_value',
                                     'MaxTc'
                                 ];
                                 const columns = displayColumns.filter((col) => col in result[0]);
@@ -618,6 +675,8 @@ export default function Result() {
                                                                 >
                                                                     {item[col]}
                                                                 </a>
+                                                            ) : col === 'p_value' && typeof item[col] === 'number' ? (
+                                                                item[col].toExponential(4)
                                                             ) : (
                                                                 item[col]
                                                             )}

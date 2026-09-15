@@ -1,10 +1,14 @@
 ## Import module
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator
-from alive_progress import alive_bar
+try:
+	from alive_progress import alive_bar
+except ImportError:
+	alive_bar = None
 from scipy.stats import genextreme
 import os
 import sys
+import time
 import numpy as np
 import pandas as pd
 import rdkit.Chem.Scaffolds.MurckoScaffold as murcko
@@ -124,16 +128,12 @@ def get_morgan_with_feature(mol, radius = 2, fpSize = 1024) :
 ## Loop through smiles strings and collect all fingerprint
 ## Return a pandas dataframe
 def collect_fingerprint(smiles, radius = 2, fpSize = 1024, useFeatures = False) :
-	data = pd.DataFrame()
-
-	for idxMol in np.arange(len(smiles)) :
-		mol = Chem.MolFromSmiles(smiles[idxMol])
-		fingerprint = get_morgan_with_feature(mol, radius, fpSize) if useFeatures else get_morgan(mol, radius, fpSize)
-		new_row = pd.Series(fingerprint)
-		data = pd.concat([data, new_row], ignore_index = True, axis = 1)
-
-	data = data.T
-	return data
+	fps = []
+	for smi in smiles :
+		mol = Chem.MolFromSmiles(smi)
+		fp = get_morgan_with_feature(mol, radius, fpSize) if useFeatures else get_morgan(mol, radius, fpSize)
+		fps.append(fp)
+	return pd.DataFrame(fps)
 
 ################################################################
 ## Tanimoto Helper Function
@@ -290,8 +290,8 @@ def load_gev_params(freq_file, cache_file, bin_width = 0.25, refit = False) :
 ################################################################
 ## Uniprot / sequence annotation
 ## Left-join sea_result on CHEMBL ID against a lookup TSV with columns
-## (target_chembl_id, target_name, organism, uniprot_accession, sequence)
-## so the final output records the Uniprot accession and protein sequence
+## (target_chembl_id, target_name, organism, uniprot_accession, uniprot_id, sequence)
+## so the final output records the Uniprot ID, accession, and protein sequence
 ## for each surviving target.  Missing entries land as NaN.
 ################################################################
 
@@ -299,22 +299,24 @@ def add_uniprot_info(sea_result, lookup_file) :
 	'''
 	sea_result	pd.DataFrame	must have a "CHEMBL ID" column
 	lookup_file	str		path to uniprot_chembl_id.tsv
-	Returns sea_result with two extra columns: "Uniprot ID" and "Sequence".
+	Returns sea_result with 3 extra columns: "Uniprot ID", "Uniprot Accession" and "Sequence".
 	No-op (with warning + NaN columns) if the lookup file is missing.
 	'''
 	if not os.path.exists(lookup_file) :
 		print("Warning: lookup file {} not found; skipping Uniprot annotation".format(lookup_file))
 		sea_result["Uniprot ID"] = np.nan
+		sea_result["Uniprot Accession"] = np.nan
 		sea_result["Sequence"]   = np.nan
 		return sea_result
 	lookup = pd.read_csv(lookup_file, sep = "\t", index_col = 0)
 	sea_result = sea_result.merge(
-		lookup[["target_chembl_id", "uniprot_accession", "sequence"]],
+		lookup[["target_chembl_id", "uniprot_accession", "uniprot_id", "sequence"]],
 		left_on = "CHEMBL ID", right_on = "target_chembl_id", how = "left",
 	)
 	sea_result = sea_result.drop(columns = ["target_chembl_id"])
 	sea_result = sea_result.rename(columns = {
-		"uniprot_accession" : "Uniprot ID",
+		"uniprot_accession" : "Uniprot Accession",
+		"uniprot_id"        : "Uniprot ID",
 		"sequence"          : "Sequence",
 	})
 	return sea_result
@@ -399,7 +401,7 @@ def sea_analysis(testFile, list_chembl, tc_cutoff = 0.29, mean_slope = 4.3304e-0
 		gev_c = 0.0, gev_loc = 0.0, gev_scale = 1.0,
 		p_threshold = 0.01, high_tc_threshold = 0.95,
 		lookup_file = "uniprot_chembl_id.tsv",
-		radius = 2, fpSize = 2048, useFeatures = False) :
+		radius = 2, fpSize = 2048, useFeatures = False, task = None) :
 	'''
 	testFile		str	file name of the test compounds
 	list_chembl		list	list of chembl compounds pathway
@@ -419,59 +421,70 @@ def sea_analysis(testFile, list_chembl, tc_cutoff = 0.29, mean_slope = 4.3304e-0
 					ligand match) the EVD might score modestly.
 	lookup_file		str	Path to TSV with columns target_chembl_id,
 					target_name, organism, uniprot_accession,
-					sequence.  Used to annotate sea_result with
-					Uniprot ID and protein sequence.
+					uniprot_id, sequence.  Used to annotate sea_result
+					with Uniprot ID, accession, and protein sequence.
 	radius			int	radius cutoff for fingerprint
 	fpSize			int	size of fingerprint
 	useFeatures		boolean	whether use ECFP or FCFP
+	task			object	Celery task for progress updates (optional)
 	'''
 
-	smiles_test = np.loadtxt(testFile, comments = None, dtype = str)
-	if smiles_test.ndim > 1 :
-		smiles_test = ["{} {}".format(remove_salt(smiles_test[idx, 0]), smiles_test[idx, 1]) for idx in np.arange(smiles_test.shape[0])]
-	else :
-		smiles_test = ["{} {}".format(remove_salt(smiles_test[0]), smiles_test[1])]
+	task.update_state(state='PROGRESS', meta={'status': 'Preparing test compounds...'}) if task else None
+	with open(testFile, "r") as f:
+		smiles_test = f.readlines()
+	smiles_test = [f"{remove_salt(x.strip().split()[0])} {x.strip().split()[1]}" for x in smiles_test]
 	data_test, mol_test = get_smiles_property(smiles_test, radius, fpSize, useFeatures)
 	saveFolder = "result_{}".format(testFile.split(".")[0])
 	_mkdir_(saveFolder)
 
 	target_name       = []
-	target_species    = []
 	target_chembl_ids = []
-	z_score_summary = []
-	p_value_summary = []
-	log_sf_summary  = []
+	z_score_summary   = []
+	p_value_summary   = []
+	log_sf_summary    = []
 	raw_score_summary = []
 	size_summary      = []
 	best_tc_summary   = []
-	with alive_bar(len(list_chembl)) as bar :
-		for idx in np.arange(len(list_chembl)) :
-			known = pd.read_csv("{}".format(list_chembl[idx]), sep = "\t", index_col = 0)
-			# known_test_tc returns a numpy array already; keep it as numpy
-			# for the score / max calculations to avoid building a labelled
-			# DataFrame here (the second loop re-creates one with labels for
-			# the per-target output TSVs).  Dropping that allocation per
-			# iteration shaved off ~half of the per-loop time on large
-			# (~100k known x ~5k test) matrices.
-			similarity = known_test_tc(known, data_test, fpSize)
-			similarity = np.round(similarity, 4)
 
-			best_tc = float(np.max(similarity)) if similarity.size > 0 else 0.0
+	count = 0
+	print("Starting SEA analysis loop...")
+	start_time = time.time()
+	for idx in np.arange(len(list_chembl)) :
+		count += 1
+		new_percent_done = int((count / len(list_chembl)) * 100)
+		print(f"Processing known set {idx + 1} of {len(list_chembl)} ({new_percent_done}%)")
+		task.update_state(state='PROGRESS',
+			meta={'status': f'Processing known set {idx + 1} of {len(list_chembl)}',
+				'progress': new_percent_done}) if task else None
 
-			# sea_score now returns raw_score and size too, so we don't redo
-			# the mask + sum just to populate the result table.
-			z_score, p_value, log_sf, raw_score, size = sea_score(
-				similarity, tc_cutoff, mean_slope, mean_intercept,
-				std_a, std_b, std_c, gev_c, gev_loc, gev_scale)
-			target_name.append(known["target_name"].tolist()[0])
-			target_chembl_ids.append(known["target_chembl_id"].tolist()[0])
-			z_score_summary.append(z_score)
-			p_value_summary.append(p_value)
-			log_sf_summary.append(log_sf)
-			raw_score_summary.append(raw_score)
-			size_summary     .append(size)
-			best_tc_summary  .append(best_tc)
-			bar()
+		known = pd.read_csv("{}".format(list_chembl[idx]), sep = "\t", index_col = 0)
+		# known_test_tc returns a numpy array already; keep it as numpy
+		# for the score / max calculations to avoid building a labelled
+		# DataFrame here (the second loop re-creates one with labels for
+		# the per-target output TSVs).  Dropping that allocation per
+		# iteration shaved off ~half of the per-loop time on large
+		# (~100k known x ~5k test) matrices.
+		similarity = known_test_tc(known, data_test, fpSize)
+		similarity = np.round(similarity, 4)
+
+		best_tc = float(np.max(similarity)) if similarity.size > 0 else 0.0
+
+		# sea_score now returns raw_score and size too, so we don't redo
+		# the mask + sum just to populate the result table.
+		z_score, p_value, log_sf, raw_score, size = sea_score(
+			similarity, tc_cutoff, mean_slope, mean_intercept,
+			std_a, std_b, std_c, gev_c, gev_loc, gev_scale)
+		target_name.append(known["target_name"].tolist()[0])
+		target_chembl_ids.append(known["target_chembl_id"].tolist()[0])
+		z_score_summary.append(z_score)
+		p_value_summary.append(p_value)
+		log_sf_summary.append(log_sf)
+		raw_score_summary.append(raw_score)
+		size_summary     .append(size)
+		best_tc_summary  .append(best_tc)
+
+	end_time = time.time()
+	print(f"SEA analysis loop time: {end_time - start_time} seconds")
 
 	# -log10(p) computed from logsf to keep precision in the deep tail.
 	neg_log10_p = - np.array(log_sf_summary) / np.log(10)
@@ -523,143 +536,155 @@ def sea_analysis(testFile, list_chembl, tc_cutoff = 0.29, mean_slope = 4.3304e-0
 	]
 	print(sea_result)
 
-	with alive_bar(sea_result.shape[0])  as bar :
-		for idx in np.arange(sea_result.shape[0]) :
-			known = pd.read_csv("{}".format(sea_result["Target chembl id"].tolist()[idx]), sep = "\t", index_col = 0)
-			similarity = known_test_tc(known, data_test, fpSize)
-			result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(),
-				columns = data_test["Name"].tolist())
+	count = 0
+	start_time = time.time()
+	print("Starting detailed results loop...")
+	for idx in np.arange(sea_result.shape[0]) :
+		count += 1
+		new_percent_done = int((count / sea_result.shape[0]) * 100)
+		print(f"Calculating detailed results {new_percent_done}% done")
+		task.update_state(state='PROGRESS',
+			meta={'status': f'Calculating detailed results {new_percent_done}% done',
+				'progress': new_percent_done}) if task else None
 
-			result = result.T
-			known.index = known["molecule_chembl_id"].tolist()
-			best_similarity = pd.DataFrame()
-			best_similarity["Name"] = list(result.index)
-			best_similarity["SMILES"] = data_test["SMILES"].tolist()
-			best_similarity["Target Chembl Id"] = [known["target_chembl_id"].tolist()[0]] * best_similarity.shape[0]
-			best_similarity["Target Name"] = [known["target_name"].tolist()[0]] * best_similarity.shape[0]
-			best_similarity["Most similar known"] = list(result.idxmax(axis = "columns"))
-			best_similarity["Tanimoto Coefficient"] = list(result.max(axis = 1))
-			best_similarity["Known Hit SMILES"] = [known.loc["{}".format(name), "canonical_smiles"] for name in result.idxmax(axis = "columns")]
-			best_similarity = best_similarity.sort_values(by = ["Tanimoto Coefficient"], ascending = False, ignore_index = True)
-			#best_similarity = best_similarity[best_similarity["Tanimoto Coefficient"] >= 0.7]
-			best_similarity.to_csv("{}/best_similar_{}_{}.tsv".format(saveFolder, testFile.split(".")[0], known["target_chembl_id"].tolist()[0]), sep = "\t")
+		known = pd.read_csv("{}".format(sea_result["Target chembl id"].tolist()[idx]), sep = "\t", index_col = 0)
+		similarity = known_test_tc(known, data_test, fpSize)
+		result = pd.DataFrame(np.round(similarity, 4), index = known["molecule_chembl_id"].tolist(),
+			columns = data_test["Name"].tolist())
 
-			summary_tc = []
-			summary_ref = []
-			summary_known = []
-			summary_ref_smiles = []
-			summary_known_smiles = []
-			result = pd.DataFrame(np.round(similarity, 4), columns = data_test["Name"].tolist())
-			ref_compound = list(result.columns)
-			known_compound = list(result.index)
-			result["Known"] = known["molecule_chembl_id"].tolist()
-			for idxC in np.arange(result.shape[1] - 1) :
-				top10 = result.sort_values(by = ["{}".format(ref_compound[idxC])], ascending = False, ignore_index = True).head(10)
-				summary_tc += top10["{}".format(ref_compound[idxC])].tolist()
-				summary_ref += [ref_compound[idxC]] * top10.shape[0]
-				summary_known += top10["Known"].tolist()
-				summary_ref_smiles += [data_test["SMILES"].to_numpy()[np.where(data_test["Name"].to_numpy() == ref_compound[idxC])[0]][0]] * top10.shape[0]
-				summary_known_smiles += [known.loc["{}".format(name), "canonical_smiles"] for name in top10["Known"].tolist()]
-			similarity_matrix = pd.DataFrame()
-			similarity_matrix["Name"] = summary_ref
-			similarity_matrix["Tanimoto Score"] = summary_tc
-			similarity_matrix["SMILES"] = summary_ref_smiles
-			similarity_matrix["Known Hit ID"] = summary_known
-			similarity_matrix["Known Hit SMILES"] = summary_known_smiles
-			similarity_matrix = similarity_matrix.sort_values(by = ["Name", "Tanimoto Score"], ascending = [True, False], ignore_index = True)
-			similarity_matrix.to_csv("{}/top10_{}_{}.tsv".format(saveFolder, testFile.split(".")[0], known["target_chembl_id"].tolist()[0]), sep = "\t")
+		result = result.T
+		known.index = known["molecule_chembl_id"].tolist()
+		best_similarity = pd.DataFrame()
+		best_similarity["Name"] = list(result.index)
+		best_similarity["SMILES"] = data_test["SMILES"].tolist()
+		best_similarity["Target Chembl Id"] = [known["target_chembl_id"].tolist()[0]] * best_similarity.shape[0]
+		best_similarity["Target Name"] = [known["target_name"].tolist()[0]] * best_similarity.shape[0]
+		best_similarity["Most similar known"] = list(result.idxmax(axis = "columns"))
+		best_similarity["Tanimoto Coefficient"] = list(result.max(axis = 1))
+		best_similarity["Known Hit SMILES"] = [known.loc["{}".format(name), "canonical_smiles"] for name in result.idxmax(axis = "columns")]
+		best_similarity = best_similarity.sort_values(by = ["Tanimoto Coefficient"], ascending = False, ignore_index = True)
+		best_similarity.to_csv("{}/best_similar_{}_{}.tsv".format(saveFolder, testFile.split(".")[0], known["target_chembl_id"].tolist()[0]), sep = "\t", index = False)
 
-			bar()
+		summary_tc = []
+		summary_ref = []
+		summary_known = []
+		summary_ref_smiles = []
+		summary_known_smiles = []
+		result = pd.DataFrame(np.round(similarity, 4), columns = data_test["Name"].tolist())
+		ref_compound = list(result.columns)
+		known_compound = list(result.index)
+		result["Known"] = known["molecule_chembl_id"].tolist()
+		for idxC in np.arange(result.shape[1] - 1) :
+			top10 = result.sort_values(by = ["{}".format(ref_compound[idxC])], ascending = False, ignore_index = True).head(10)
+			summary_tc += top10["{}".format(ref_compound[idxC])].tolist()
+			summary_ref += [ref_compound[idxC]] * top10.shape[0]
+			summary_known += top10["Known"].tolist()
+			summary_ref_smiles += [data_test["SMILES"].to_numpy()[np.where(data_test["Name"].to_numpy() == ref_compound[idxC])[0]][0]] * top10.shape[0]
+			summary_known_smiles += [known.loc["{}".format(name), "canonical_smiles"] for name in top10["Known"].tolist()]
+		similarity_matrix = pd.DataFrame()
+		similarity_matrix["Name"] = summary_ref
+		similarity_matrix["Tanimoto Score"] = summary_tc
+		similarity_matrix["SMILES"] = summary_ref_smiles
+		similarity_matrix["Known Hit ID"] = summary_known
+		similarity_matrix["Known Hit SMILES"] = summary_known_smiles
+		similarity_matrix = similarity_matrix.sort_values(by = ["Name", "Tanimoto Score"], ascending = [True, False], ignore_index = True)
+		similarity_matrix.to_csv("{}/top10_{}_{}.tsv".format(saveFolder, testFile.split(".")[0], known["target_chembl_id"].tolist()[0]), sep = "\t", index = False)
 
+	end_time = time.time()
+	print(f"Detailed results loop time: {end_time - start_time} seconds")
+
+	# remove the path in target chembl id
+	sea_result["Target chembl id"] = [x.split("/")[-1].split(".")[0] for x in sea_result["Target chembl id"].tolist()]
 	sea_result = sea_result.sort_values(by = ["p(P value)"], ignore_index = True)
-	sea_result.to_csv("{}/sea_result.tsv".format(saveFolder), sep = "\t")
+	sea_result.to_csv("{}/sea_result.tsv".format(saveFolder), sep = "\t", index = False)
+	task.update_state(state='SUCCESS', meta={'status': 'SEA analysis completed.'}) if task else None
 
 	return sea_result
 
 ################################################################
-## Read in and process extreme value distribution 
+## Read in and process extreme value distribution
 ################################################################
 
-## Input variables
-testFile     = sys.argv[1]
-list_chembl  = np.loadtxt("{}".format(sys.argv[2]), dtype = str)
+if __name__ == "__main__" :
 
-## SEA Tc cutoff -- smallest GoF error from zscore_dist.py
-tc_cutoff      = 0.29
+	## Input variables
+	testFile     = sys.argv[1]
+	list_chembl  = np.loadtxt("{}".format(sys.argv[2]), dtype = str)
 
-## Mean fit  : E[score]   = mean_slope * size + mean_intercept
-## See param_avg_tanimoto.tsv (row tc = 0.29)
-mean_slope     = 4.3304e-04
-mean_intercept = -0.01631567
+	## SEA Tc cutoff -- smallest GoF error from zscore_dist.py
+	tc_cutoff      = 0.29
 
-## Std fit   : Std[score] = std_a * size ** std_b + std_c
-## See param_std_tanimoto.tsv (row tc = 0.29)
-std_a          = 0.0047
-std_b          = 0.6409
-std_c          = 0.4999
+	## Mean fit  : E[score]   = mean_slope * size + mean_intercept
+	## See param_avg_tanimoto.tsv (row tc = 0.29)
+	mean_slope     = 4.3304e-04
+	mean_intercept = -0.01631567
 
-## p-value   : scipy.stats.genextreme survival function
-## c, loc, scale fitted once from the null-set z-score histogram at
-## Tc = 0.29 and cached to gev_cache_file for subsequent runs.  At
-## Tc = 0.29, genextreme has the smallest chi^2_Neyman among the 6
-## EVDs tried in zscore_dist.py.
-##
-## gev_freq_file is the unbinned, Tc-filtered raw histogram and does
-## not depend on bin_width (orig_freq.tsv is byte-identical across
-## result_binwidth_*/ runs).  bin_width controls only the binning
-## applied before fitting and is encoded in the cache filename, so
-## changing gev_bin_width auto-invalidates the cache and refits.
-## Set refit_gev = True to force a refit even when the cache exists.
-gev_bin_width   = 0.25
-gev_freq_file   = "../Parameterization/result_binwidth_0.25/{}_orig_freq.tsv".format(tc_cutoff)
-gev_cache_file  = "gev_params_tc{}_bw{}.tsv".format(tc_cutoff, gev_bin_width)
-refit_gev       = False
-gev_c, gev_loc, gev_scale = load_gev_params(
-	gev_freq_file, gev_cache_file, bin_width = gev_bin_width, refit = refit_gev)
-print("Genextreme @ Tc = {}, bin_width = {}: c = {:.6f}, loc = {:.6f}, scale = {:.6f}".format(
-	tc_cutoff, gev_bin_width, gev_c, gev_loc, gev_scale))
+	## Std fit   : Std[score] = std_a * size ** std_b + std_c
+	## See param_std_tanimoto.tsv (row tc = 0.29)
+	std_a          = 0.0047
+	std_b          = 0.6409
+	std_c          = 0.4999
 
-## Filtering thresholds for the saved sea_result table.
-##	p_threshold        : keep targets with p-value <= this (actual p, not
-##	                     -log10(p)).  Default 0.01 corresponds to the
-##	                     -log10(p) >= 2.0 cut used in the SEA paper.
-##	high_tc_threshold  : keep targets whose maximum pairwise Tc strictly
-##	                     exceeds this regardless of p.  Catches near
-##	                     identical hits (e.g. literature ligand) the EVD
-##	                     might score modestly.
-p_threshold       = 0.01
-high_tc_threshold = 0.95
+	## p-value   : scipy.stats.genextreme survival function
+	## c, loc, scale fitted once from the null-set z-score histogram at
+	## Tc = 0.29 and cached to gev_cache_file for subsequent runs.  At
+	## Tc = 0.29, genextreme has the smallest chi^2_Neyman among the 6
+	## EVDs tried in zscore_dist.py.
+	##
+	## gev_freq_file is the unbinned, Tc-filtered raw histogram and does
+	## not depend on bin_width (orig_freq.tsv is byte-identical across
+	## result_binwidth_*/ runs).  bin_width controls only the binning
+	## applied before fitting and is encoded in the cache filename, so
+	## changing gev_bin_width auto-invalidates the cache and refits.
+	## Set refit_gev = True to force a refit even when the cache exists.
+	gev_bin_width   = 0.25
+	gev_freq_file   = "../Parameterization/result_binwidth_0.25/{}_orig_freq.tsv".format(tc_cutoff)
+	gev_cache_file  = "gev_params_tc{}_bw{}.tsv".format(tc_cutoff, gev_bin_width)
+	refit_gev       = False
+	gev_c, gev_loc, gev_scale = load_gev_params(
+		gev_freq_file, gev_cache_file, bin_width = gev_bin_width, refit = refit_gev)
+	print("Genextreme @ Tc = {}, bin_width = {}: c = {:.6f}, loc = {:.6f}, scale = {:.6f}".format(
+		tc_cutoff, gev_bin_width, gev_c, gev_loc, gev_scale))
 
-## Lookup TSV used to annotate the final sea_result with Uniprot ID and
-## protein sequence.  Columns required: target_chembl_id, uniprot_accession,
-## sequence.  Missing entries land as NaN.
-lookup_file       = "uniprot_chembl_id.tsv"
+	## Filtering thresholds for the saved sea_result table.
+	##	p_threshold        : keep targets with p-value <= this (actual p, not
+	##	                     -log10(p)).  Default 0.01 corresponds to the
+	##	                     -log10(p) >= 2.0 cut used in the SEA paper.
+	##	high_tc_threshold  : keep targets whose maximum pairwise Tc strictly
+	##	                     exceeds this regardless of p.  Catches near
+	##	                     identical hits (e.g. literature ligand) the EVD
+	##	                     might score modestly.
+	p_threshold       = 0.01
+	high_tc_threshold = 0.95
 
-## Fingerprint settings
-radius      = 2
-fpSize      = 2048
-useFeatures = False
+	## Lookup TSV used to annotate the final sea_result with Uniprot ID and
+	## protein sequence.  Columns required: target_chembl_id, uniprot_accession,
+	## uniprot_id, sequence.  Missing entries land as NaN.
+	lookup_file       = "uniprot_chembl_id.tsv"
 
-################################################################
-## SEA predictions
-################################################################
+	## Fingerprint settings
+	radius      = 2
+	fpSize      = 2048
+	useFeatures = False
 
-sea_result = sea_analysis(testFile, list_chembl,
-	tc_cutoff         = tc_cutoff,
-	mean_slope        = mean_slope,
-	mean_intercept    = mean_intercept,
-	std_a             = std_a,
-	std_b             = std_b,
-	std_c             = std_c,
-	gev_c             = gev_c,
-	gev_loc           = gev_loc,
-	gev_scale         = gev_scale,
-	p_threshold       = p_threshold,
-	high_tc_threshold = high_tc_threshold,
-	lookup_file       = lookup_file,
-	radius            = radius,
-	fpSize            = fpSize,
-	useFeatures       = useFeatures)
-print(sea_result)
+	################################################################
+	## SEA predictions
+	################################################################
 
-
+	sea_result = sea_analysis(testFile, list_chembl,
+		tc_cutoff         = tc_cutoff,
+		mean_slope        = mean_slope,
+		mean_intercept    = mean_intercept,
+		std_a             = std_a,
+		std_b             = std_b,
+		std_c             = std_c,
+		gev_c             = gev_c,
+		gev_loc           = gev_loc,
+		gev_scale         = gev_scale,
+		p_threshold       = p_threshold,
+		high_tc_threshold = high_tc_threshold,
+		lookup_file       = lookup_file,
+		radius            = radius,
+		fpSize            = fpSize,
+		useFeatures       = useFeatures)
+	print(sea_result)
