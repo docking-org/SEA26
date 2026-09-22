@@ -617,10 +617,15 @@ def cleanup_task(*args, **kwargs):
     import re, shutil, time
 
     save_folder = os.environ.get("SEA_JOB_DIR")
+    # uuid is this str(uuid.uuid4().hex[:12])
     _uuid_re = re.compile(
-        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        r'^[0-9a-f]{12}$',
         re.IGNORECASE,
     )
+    # _uuid_re = re.compile(
+    #     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    #     re.IGNORECASE,
+    # )
 
     sea_dirs = [d for d in os.listdir(save_folder) if _uuid_re.match(d)]
     if len(sea_dirs) < 30:
@@ -757,7 +762,7 @@ def run_boltz_job(self, task_id: str, job_key: str, boltz_dir: str, run_script: 
 celery.conf.beat_schedule = {
     'daily-cleanup-task': {
         'task': 'main.cleanup_task',
-        'schedule': crontab(minute=10, hour='*'),  # Run every hour
+        'schedule': crontab(minute=15, hour='*'),  # Run every hour
     },
 }
 
