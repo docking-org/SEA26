@@ -22,7 +22,7 @@ export default function Result() {
     const [sortBy, setSortBy] = useState('score');
     const [sortDirection, setSortDirection] = useState('desc');
     const [resultSortBy, setResultSortBy] = useState('p_value');
-    const [resultSortDir, setResultSortDir] = useState('desc');
+    const [resultSortDir, setResultSortDir] = useState('asc');
     const [activeButton, setActiveButton] = useState(false);
     const [taskStatus, setTaskStatus] = useState(null);
     const [errorMessage, setErrorMessage] = useState(null);

@@ -443,15 +443,16 @@ HDAC1 [O-]C(=O)CCC butyrate`}
                 <p className="text-teal-950 mb-2">Examples:</p>
                 <p className="text-pretty text-sm sm:text-base text-teal-950 break-all sm:break-norma bg-white/50 p-3 rounded-md">
                   <pre>
-                  CNCCC(c1ccccc1)Oc2ccc(cc2)C(F)(F)F fluoxetine<br/>
-                  Cn1cnc2c1c(=O)n(c(=O)n2C)C caffeine
+                  COc1ccc2[nH]cc(c2c1)C(CC)CN<br/>
+                  Cc1ccc2c3c1C(CN3CCNC2)CC<br/>
+                  CCOc1cc(c(cc1I)OC)CC(C)N<br/>
                   </pre>
                   
                 </p>
                 <button
                   type="button"
                   onClick={() => {
-                    setQuery("CNCCC(c1ccccc1)Oc2ccc(cc2)C(F)(F)F fluoxetine\nCn1cnc2c1c(=O)n(c(=O)n2C)C caffeine");
+                    setQuery("COc1ccc2[nH]cc(c2c1)C(CC)CN\nCc1ccc2c3c1C(CN3CCNC2)CC\nCCOc1cc(c(cc1I)OC)CC(C)N");
                     setErrorMessage('');
                     setIsValid(true);
                   }}
