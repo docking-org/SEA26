@@ -14,8 +14,9 @@ _DEFAULT_INTERNAL_SUBNETS = [
 
 def _get_internal_subnets() -> list[ipaddress.ip_network]:
     raw = os.getenv("INTERNAL_SUBNETS")
-    subnets = [s.strip() for s in raw.split(",")] if raw else _DEFAULT_INTERNAL_SUBNETS
-    return [ipaddress.ip_network(s, strict=False) for s in subnets]
+    entries = [s.strip() for s in raw.split(",")] if raw else _DEFAULT_INTERNAL_SUBNETS
+    normalized = [s if "/" in s else s + ("/128" if ":" in s else "/32") for s in entries]
+    return [ipaddress.ip_network(s, strict=False) for s in normalized]
 
 
 def _is_internal_ip(ip_str: str) -> bool:
