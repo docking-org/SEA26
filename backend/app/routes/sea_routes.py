@@ -184,6 +184,19 @@ async def get_result(request: Request):
     if job_info.get("status") == "SUCCESS":
         job_info["sea_score_done"] = True
 
+    sea_raw   = job_info.pop("progress", 0)
+    sea_calc  = job_info.pop("sea_calculated", False)
+    sim_calc  = job_info.pop("best_similarity_calculated", False)
+    heat_calc = job_info.pop("heatmap_calculated", False)
+    if heat_calc:
+        job_info["progress"] = 100
+    elif sim_calc:
+        job_info["progress"] = 99
+    elif sea_calc:
+        job_info["progress"] = 98
+    else:
+        job_info["progress"] = round(sea_raw * 0.98)
+
     print(job_info)
 
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}"

@@ -12,7 +12,7 @@ import pandas as pd
 import numpy as np
 import redis
 import pickle
-from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, sea_score, save_progress, get_progress
+from .helper import get_smiles_property, _mkdir_, remove_salt, known_test_tc, calc_tanimoto_sets, sea_score, save_progress, get_progress
 from .scripts.generate_boltz_jobs import generate_jobs as _generate_boltz_jobs
 from dotenv import load_dotenv, find_dotenv
 import os
@@ -68,6 +68,43 @@ def on_worker_init(**kwargs):
     """Start cache warming in the background so the worker is not blocked on NFS."""
     import threading
     threading.Thread(target=warm_target_cache, daemon=True).start()
+    _kill_orphaned_boltz_jobs()
+
+
+def _kill_orphaned_boltz_jobs():
+    """Mark any boltz jobs left in 'running' state as 'killed' (worker was restarted mid-job)."""
+    import json as _json, glob as _glob, tempfile as _tempfile, fcntl as _fcntl
+    from datetime import datetime, timezone
+    job_dir = os.getenv("SEA_JOB_DIR", "")
+    if not job_dir:
+        return
+    pattern = os.path.join(job_dir, "*", "boltz_jobs", ".boltz_jobs.json")
+    for jobs_file in _glob.glob(pattern):
+        try:
+            lock_path = jobs_file + ".lock"
+            with open(lock_path, "a") as _lf:
+                _fcntl.lockf(_lf, _fcntl.LOCK_EX)
+                try:
+                    with open(jobs_file) as _f:
+                        jobs = _json.load(_f)
+                    changed = False
+                    for job in jobs.values():
+                        if job.get("status") == "running":
+                            job["status"] = "killed"
+                            job["finished_at"] = datetime.now(timezone.utc).isoformat()
+                            changed = True
+                    if changed:
+                        dir_name = os.path.dirname(jobs_file)
+                        with _tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, suffix=".tmp") as tf:
+                            _json.dump(jobs, tf)
+                            tmp_path = tf.name
+                        os.chmod(tmp_path, 0o644)
+                        os.replace(tmp_path, jobs_file)
+                        print(f"boltz cleanup: marked orphaned jobs as killed in {jobs_file}")
+                finally:
+                    _fcntl.lockf(_lf, _fcntl.LOCK_UN)
+        except Exception as e:
+            print(f"boltz cleanup: failed to clean {jobs_file}: {e}")
 
 def get_cached_target(target_file):
     """Get target DataFrame from Redis cache, or load from disk if not cached."""
@@ -201,12 +238,16 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
     # Compute fingerprints once per batch (not once per target)
     data_test, mol_test = get_smiles_property(smiles_test)
 
+    # Pre-compute once per batch (constant across all targets in this chunk)
+    fp_cols_str = np.arange(fpSize).astype(str)
+    fp_test     = data_test[np.arange(fpSize)].to_numpy()
+
     results = []
     for target in targets:
         try:
-            known = get_cached_target(target)
-            similarity = known_test_tc(known, data_test, fpSize)
-            similarity = np.round(similarity, 4)
+            known      = get_cached_target(target)
+            fp_known   = known[fp_cols_str].to_numpy()
+            similarity = calc_tanimoto_sets(fp_known, fp_test)
 
             best_tc = float(np.max(similarity)) if similarity.size > 0 else 0.0
 
@@ -228,16 +269,20 @@ def sea_target_score_batch(targets, parent_task_id, total_targets, smiles_key,
         progress = int((completed / total_targets) * 100)
         is_done = completed >= total_targets
 
-        celery.backend.store_result(
-            parent_task_id,
-            result={
-                'completed_cnt': completed,
-                'total': total_targets,
-                'progress': progress,
-                'status': 'POSTPROCESSING' if is_done else 'RUNNING',
-            },
-            state='POSTPROCESSING' if is_done else 'RUNNING'
-        )
+        # Only write to Celery backend when the integer-percent progress changes (or on completion)
+        # to reduce Redis round-trips from N_targets down to at most 100 per job.
+        prev_progress = int(((completed - 1) / total_targets) * 100)
+        if progress != prev_progress or is_done:
+            celery.backend.store_result(
+                parent_task_id,
+                result={
+                    'completed_cnt': completed,
+                    'total': total_targets,
+                    'progress': progress,
+                    'status': 'POSTPROCESSING' if is_done else 'RUNNING',
+                },
+                state='POSTPROCESSING' if is_done else 'RUNNING'
+            )
         if is_done:
             r.delete(f"progress:{parent_task_id}:completed_cnt")
     return results
@@ -330,17 +375,32 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
         sea_result["Uniprot_ID"] = list(uniprot_id_list)
         sea_result["Uniprot_Accession"] = list(uniprot_accession_list)
 
-        sea_result = sea_result.sort_values(by="p_value", ignore_index=True)
+        # Look up protein sequences (needed by Boltz-2 and boltz_submit_from_heatmap)
+        acc2seq = {}
+        _lookup_path = os.getenv(
+            "SEA_UNIPROT_INFO_FILE",
+            os.path.join(data_folder, "uniprot_chembl_id_uniprot_info.tsv"),
+        )
+        if os.path.exists(_lookup_path):
+            try:
+                _ldf = pd.read_csv(_lookup_path, sep="\t")
+                if "uniprot_accession" in _ldf.columns and "sequence" in _ldf.columns:
+                    acc2seq = dict(zip(_ldf["uniprot_accession"].astype(str), _ldf["sequence"].astype(str)))
+            except Exception as _le:
+                _write_log_(phase1_log, f"Warning: could not load sequence lookup: {_le}")
+        sea_result["Sequence"] = sea_result["Uniprot_Accession"].map(acc2seq).fillna("")
 
         n_before_filter = len(sea_result)
         filtered_result = sea_result[(sea_result["p(P_value)"] >= P_VALUE_THRESHOLD) | (sea_result["MaxTc"] > HIGH_TC_THRESHOLD)]
-        # order result by z-score descending
-        filtered_result = filtered_result.sort_values(by="Z_score", ascending=False, ignore_index=True)
 
         # Format p_value as scientific notation for output files
         sea_result["p_value"] = sea_result["p_value"].apply(lambda v: f"{v:.4e}")
         filtered_result = filtered_result.copy()
         filtered_result["p_value"] = filtered_result["p_value"].apply(lambda v: f"{v:.4e}")
+
+        # Sort by p_value ascending (small to large) using numeric p(P_value) descending
+        sea_result = sea_result.sort_values(by="p(P_value)", ascending=False, ignore_index=True)
+        filtered_result = filtered_result.sort_values(by="p(P_value)", ascending=False, ignore_index=True)
 
         sea_result.to_csv(f"{save_folder}/sea_result_all.tsv", sep="\t", index=False)
         _write_log_(phase1_log, f"Significant hits ): {len(filtered_result)} of {n_before_filter}")
@@ -375,12 +435,18 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
         log_lock = threading.Lock()
 
+        # Pre-compute once for all hit targets (constant across the thread pool)
+        fp_cols_str_p2 = np.arange(2048).astype(str)
+        fp_test_p2     = data_test[np.arange(2048)].to_numpy()
+
         def _process_one_target_(idx):
             row = filtered_result.iloc[idx]
             target_chembl_id = row["Target_Chembl_ID"]
+            target_uniprot_id = row["Uniprot_ID"]
             species = row["Target_Species"]
-            known = get_cached_target(f"{data_folder}/{species}/{target_chembl_id}.tsv")
-            similarity = known_test_tc(known, data_test, fpSize=2048)
+            known      = get_cached_target(f"{data_folder}/{species}/{target_chembl_id}.tsv")
+            fp_known   = known[fp_cols_str_p2].to_numpy()
+            similarity = calc_tanimoto_sets(fp_known, fp_test_p2)
             sim_rounded = np.round(similarity, 4)
             known_ids = known["molecule_chembl_id"].tolist()
             known_smiles = dict(zip(known["molecule_chembl_id"], known["canonical_smiles"]))
@@ -401,6 +467,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                 "SMILES": data_test["SMILES"].tolist(),
                 "Target_Chembl_Id": target_cid,
                 "Target_Name": target_nm,
+                "Uniprot_ID": row["Uniprot_ID"],
                 "Most_similar_known": best_known_ids,
                 "Tanimoto_Coefficient": best_tc_vals,
                 "Known_Hit_SMILES": [known_smiles[kid] for kid in best_known_ids],
@@ -435,6 +502,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
             sim_df.to_csv(f"{save_folder}/top10_{target_cid}.tsv", sep="\t", index=False)
             sim_df["Target_ChEMBL_ID"] = target_cid
             sim_df["Target_Name"] = target_nm
+            sim_df["Uniprot_ID"] = target_uniprot_id
 
             with log_lock:
                 _write_log_(phase2_log, f"[{idx+1}/{n_hit_targets}] {target_cid} ({target_nm}): known={len(known_ids)}, max_tc={float(best_tc_vals.max()):.4f}, high_sim_hits={len(best_similarity)}")
@@ -491,7 +559,8 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
             grouped_target_hits = {}
 
             for hit in hits:
-                tkey = f"{hit["Target_ChEMBL_ID"]}:{hit["Target_Name"]}"
+                # tkey = f"{hit["Target_ChEMBL_ID"]}:{hit["Target_Name"]}" # old
+                tkey = f"{hit['Target_ChEMBL_ID']}:{hit['Uniprot_ID']}:{hit['Target_Name']}"
                 if tkey not in grouped_target_hits:
                     grouped_target_hits[tkey] = []
                 grouped_target_hits[tkey].append({
@@ -518,28 +587,9 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
 
     _write_log_(phase3_log, f"Phase 3 completed: {len(heatmap_result)} compounds written to .heatmap")
 
-    # --- Phase 4: Generate Boltz-2 job folders ---
+    # --- Phase 4: Boltz-2 auto-queue disabled ---
     phase4_log = f"{log_dir}/boltz.log"
-    try:
-        _write_log_(phase4_log, "Phase 4 started: generating Boltz-2 job folders")
-        boltz_out = f"{job_dir}/{task_id}/boltz_jobs"
-        test_file = f"{job_dir}/{task_id}/input.smi"
-        result_dir = f"{job_dir}/{task_id}/sea_output"
-        lookup_file = os.path.join(os.getenv("SEA_DATA_FOLDER"), "uniprot_chembl_id.tsv")
-        manifest = _generate_boltz_jobs(
-            result_dir=result_dir,
-            testFile=test_file,
-            out_dir=boltz_out,
-            tc_min=0.0,
-            lookup_file=lookup_file,
-            predict_affinity=True,
-            log_file=phase4_log,
-        )
-        _write_log_(phase4_log, f"Phase 4 completed: {manifest.shape[0]} Boltz jobs written to {boltz_out}")
-    except RuntimeError as e:
-        _write_log_(phase4_log, f"Phase 4 skipped: {e}")
-    except Exception as e:
-        _write_log_(phase4_log, f"Phase 4 FAILED: {e}\n{traceback.format_exc()}")
+    _write_log_(phase4_log, "Phase 4 skipped: Boltz-2 auto-queuing is disabled")
 
     save_progress(task_id, {
         'progress': 100, 'status': 'SUCCESS', 'error': None,
@@ -617,15 +667,11 @@ def cleanup_task(*args, **kwargs):
     import re, shutil, time
 
     save_folder = os.environ.get("SEA_JOB_DIR")
-    # uuid is this str(uuid.uuid4().hex[:12])
+  
     _uuid_re = re.compile(
         r'^[0-9a-f]{12}$',
         re.IGNORECASE,
     )
-    # _uuid_re = re.compile(
-    #     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
-    #     re.IGNORECASE,
-    # )
 
     sea_dirs = [d for d in os.listdir(save_folder) if _uuid_re.match(d)]
     if len(sea_dirs) < 30:
@@ -668,6 +714,7 @@ def run_boltz_job(self, task_id: str, job_key: str, boltz_dir: str, run_script: 
                     with _tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False, suffix=".tmp") as tf:
                         _json.dump(jobs, tf)
                         tmp_path = tf.name
+                    os.chmod(tmp_path, 0o644)
                     os.replace(tmp_path, jobs_file)
                 finally:
                     _fcntl.lockf(_lf, _fcntl.LOCK_UN)

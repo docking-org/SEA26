@@ -110,11 +110,17 @@ export default function Result() {
                 console.log('Task failed:', data);
             }
             else if (data.status === 'RUNNING' || data.status === 'PENDING') {
-                setPercent1Done(data.progress);
+                setPercent1Done(data.progress ?? 0);
+                // Show results as soon as sea_result.tsv is written (Phase 1 post-processing done)
+                if (data.result && data.result.length > 0) {
+                    setResult(data.result);
+                    if (data.input) setInputCompounds(data.input);
+                }
                 console.log('Task in progress:', data);
             } else {
                 console.log('Task status:', data);
             }
+
         } catch (error) {
             console.error('Error checking task status:', error);
         }
@@ -526,8 +532,8 @@ export default function Result() {
                 
                 {/* Progress Bar */}
                 <div className="mb-6">
-                    <div className="flex justify-between items-center mb-2">
-                        <span className="text-sm font-medium text-gray-700">Processing Status</span>
+                    <div className="flex justify-between items-center mb-1">
+                        <span className="text-sm font-medium text-gray-700">Progress</span>
                         <span className="text-sm font-medium text-gray-700">{percent1Done}%</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden shadow-inner">
@@ -546,13 +552,13 @@ export default function Result() {
                         </div>
                     </div>
                     <p className="text-xs text-gray-500 mt-1">
-                        {taskStatus === 'SUCCESS'
-                            ? 'Task completed successfully!'
-                            : taskStatus === 'ERROR'
-                                ? 'Task failed.'
-                                : percent1Done === 100
-                                    ? 'Postprocessing results...'
-                                    : 'Please wait while we process your request...'}
+                        {taskStatus === 'ERROR'
+                            ? 'Task failed.'
+                            : percent1Done === 100
+                                ? 'Complete'
+                                : percent1Done >= 98
+                                    ? 'Post-processing output...'
+                                    : 'Scoring targets...'}
                     </p>
                 </div>
                 {taskStatus === 'ERROR' && (
