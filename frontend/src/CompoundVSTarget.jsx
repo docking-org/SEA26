@@ -763,7 +763,7 @@ export default function CompoundVsTarget() {
                                         whiteSpace: 'nowrap',
                                         borderBottom: '1px solid transparent'
                                     }}>
-                                        {target.split(':')[0]}
+                                        {target.split(':')[1] || target.split(':')[0]}
                                     </div>
                                 ))}
                             </div>
@@ -840,7 +840,8 @@ export default function CompoundVsTarget() {
                                 borderBottom: '1px solid #eee'
                             }}>
                                 <strong>Target ChEMBL ID:</strong> {displayTooltip.target.split(':')[0]}<br />
-                                <strong>Target Name:</strong> {displayTooltip.target.split(':')[1]}<br />
+                                <strong>Target UniProt ID:</strong> {displayTooltip.target.split(':')[1] || 'N/A'}<br />
+                                <strong>Target Name:</strong> {displayTooltip.target.split(':')[2]}<br />
                                 <strong>Known Hit ID:</strong> {displayTooltip.hitId}<br />
                                 <strong>Tanimoto Score:</strong> {displayTooltip.score.toFixed(4)}
                             </div>
@@ -957,7 +958,8 @@ export default function CompoundVsTarget() {
                         {/* Submit to Boltz2 — only for internal users when cell is locked */}
                         {isInternal && lockedTooltip && heatmapData && (() => {
                             const chemblId   = lockedTooltip.target.split(':')[0];
-                            const targetName = lockedTooltip.target.split(':')[1] || chemblId;
+                            const uniprotId = lockedTooltip.target.split(':')[1];
+                            const targetName = lockedTooltip.target.split(':')[2] || chemblId;
 
                             const queryName   = heatmapData.Name;
                             const querySmiles = heatmapData.SMILES;

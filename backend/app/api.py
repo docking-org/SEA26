@@ -39,7 +39,7 @@ async def spa_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404:
         if request.url.path.startswith("/api"):
             return JSONResponse(status_code=404, content={"detail": exc.detail})
-        return FileResponse(os.path.join(frontend_path, "index.html"), status_code=404)
+        return FileResponse(os.path.join(frontend_path, "index.html"))
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 

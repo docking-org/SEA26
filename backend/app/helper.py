@@ -266,7 +266,7 @@ def sea_analysis_with_multiprocessing(testFile, list_chembl,
 			res.get()
 	# Save filtered results
 	sea_results["Target_chembl_id"] = [x.split("/")[-1].split(".")[0] for x in sea_results["Target_chembl_id"].tolist()]
-	sea_results = sea_results.sort_values(by = ["p(P_value)"], ignore_index = True)
+	sea_results = sea_results.sort_values(by = ["p(P_value)"], ascending=False, ignore_index = True)
 	sea_results.to_csv("{}/sea_result.tsv".format(saveFolder), sep = "\t", index = False)
 	task.update_state(state='SUCCESS', meta={'status': 'SEA analysis completed.'}) if task else None
 	return sea_results
