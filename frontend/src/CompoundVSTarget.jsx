@@ -1077,9 +1077,9 @@ export default function CompoundVsTarget() {
                                     {queryStatus === 'failed' && (
                                         <div style={{ marginBottom: '6px' }}>
                                             <button
-                                                disabled={!altchaVerified}
+                                                disabled={!altchaDisabled && !altchaVerified}
                                                 onClick={() => submitBoltzFromHeatmap(chemblId, queryName, querySmiles)}
-                                                style={retryBtnStyle(!altchaVerified)}
+                                                style={retryBtnStyle(!altchaDisabled && !altchaVerified)}
                                             >
                                                 Retry Query
                                             </button>
@@ -1088,9 +1088,9 @@ export default function CompoundVsTarget() {
                                     {hasHit && hitStatus === 'failed' && (
                                         <div style={{ marginBottom: '6px' }}>
                                             <button
-                                                disabled={!altchaVerified}
+                                                disabled={!altchaDisabled && !altchaVerified}
                                                 onClick={() => submitBoltzFromHeatmap(chemblId, hitId, hitSmiles)}
-                                                style={retryBtnStyle(!altchaVerified)}
+                                                style={retryBtnStyle(!altchaDisabled && !altchaVerified)}
                                             >
                                                 Retry Hit
                                             </button>
