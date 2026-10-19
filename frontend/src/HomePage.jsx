@@ -470,7 +470,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
               <div className="mt-6 flex justify-center">
                 <altcha-widget
                   ref={altchaRef}
-                  challenge="/api/captcha/challenge"
+                  challengeurl="/api/captcha/challenge"
                 ></altcha-widget>
               </div>
             )}

@@ -1147,7 +1147,7 @@ export default function CompoundVsTarget() {
                                         <div style={{ marginTop: '10px' }}>
                                             <altcha-widget
                                                 ref={altchaCallbackRef}
-                                                challenge="/api/captcha/challenge"
+                                                challengeurl="/api/captcha/challenge"
                                                 style={{ display: 'block' }}
                                             />
                                         </div>
