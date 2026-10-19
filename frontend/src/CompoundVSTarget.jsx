@@ -470,7 +470,7 @@ export default function CompoundVsTarget() {
         }
     }, [taskId]);
 
-    const [altchaDisabled, setAltchaDisabled] = useState(false);
+    const [altchaDisabled, setAltchaDisabled] = useState(null);
     const [isInternal, setIsInternal] = useState(false);
 
     useEffect(() => {
@@ -487,9 +487,11 @@ export default function CompoundVsTarget() {
                 if (data.disabled) {
                     setAltchaDisabled(true);
                     setAltchaVerified(true);
+                } else {
+                    setAltchaDisabled(false);
                 }
             })
-            .catch(() => {});
+            .catch(() => { setAltchaDisabled(false); });
     }, []);
 
     // Callback ref — runs when the widget actually mounts/unmounts (conditional render safe)
@@ -1141,7 +1143,7 @@ export default function CompoundVsTarget() {
                                         </div>
                                     )}
 
-                                    {submitBtnLabel && !altchaDisabled && (
+                                    {submitBtnLabel && altchaDisabled === false && (
                                         <div style={{ marginTop: '10px' }}>
                                             <altcha-widget
                                                 ref={altchaCallbackRef}
@@ -1150,7 +1152,7 @@ export default function CompoundVsTarget() {
                                             />
                                         </div>
                                     )}
-                                    {submitBtnLabel && !altchaVerified && !altchaDisabled && (
+                                    {submitBtnLabel && !altchaVerified && altchaDisabled === false && (
                                         <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', textAlign: 'center' }}>
                                             Complete the CAPTCHA first
                                         </div>
