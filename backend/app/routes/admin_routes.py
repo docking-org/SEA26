@@ -21,7 +21,10 @@ def get_captcha_challenge():
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
     if not hmac_secret:
         return {"disabled": True}
-    return create_challenge_v1(hmac_key=hmac_secret, max_number=100000).to_dict()
+    challenge = create_challenge_v1(hmac_key=hmac_secret, max_number=100000).to_dict()
+    if "maxNumber" in challenge:
+        challenge["maxnumber"] = challenge.pop("maxNumber")
+    return challenge
 
 
 @router.post("/warm_cache")
