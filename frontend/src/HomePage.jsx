@@ -486,9 +486,9 @@ HDAC1 [O-]C(=O)CCC butyrate`}
               ) : (
                 <button
                   onClick={handleSubmit}
-                  disabled={isLoading || query.trim().length === 0 || !altchaVerified}
+                  disabled={isLoading || query.trim().length === 0 || (!altchaDisabled && !altchaVerified)}
                   className={`rounded-md px-3.5 py-2.5 text-md font-semibold text-white shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 ${
-                    query.trim().length === 0 || !altchaVerified
+                    query.trim().length === 0 || (!altchaDisabled && !altchaVerified)
                       ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-blue-400 hover:bg-indigo-400'
                   }`}
