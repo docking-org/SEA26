@@ -24,7 +24,7 @@ function HomePage() {
   const [errorMessage, setErrorMessage] = useState(''); // NEW: error message state
   const [bannerVisible, setBannerVisible] = useState(true);
 
-  const [altchaDisabled, setAltchaDisabled] = useState(false);
+  const [altchaDisabled, setAltchaDisabled] = useState(null);
 
   useEffect(() => {
     fetch('/api/captcha/challenge')
@@ -33,9 +33,11 @@ function HomePage() {
         if (data.disabled) {
           setAltchaDisabled(true);
           setAltchaVerified(true);
+        } else {
+          setAltchaDisabled(false);
         }
       })
-      .catch(() => {});
+      .catch(() => { setAltchaDisabled(false); });
   }, []);
 
   useEffect(() => {
@@ -464,7 +466,7 @@ HDAC1 [O-]C(=O)CCC butyrate`}
             )}
 
             {/* ALTCHA Captcha Widget */}
-            {!altchaDisabled && (
+            {altchaDisabled === false && (
               <div className="mt-6 flex justify-center">
                 <altcha-widget
                   ref={altchaRef}
