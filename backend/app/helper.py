@@ -277,22 +277,23 @@ def sea_analysis_with_multiprocessing(testFile, list_chembl,
 def get_progress(task_id: str) -> dict:
 	progress_file = f"{os.environ.get('SEA_JOB_DIR')}/{task_id}/.progress"
 	if os.path.exists(progress_file):
-		with open(progress_file, 'r') as f:
-			progress_data = json.load(f)
-		return progress_data
-	else:
-		return {'progress': 0, 'status': 'No progress data found.'}
+		try:
+			with open(progress_file, 'r') as f:
+				return json.load(f)
+		except (json.JSONDecodeError, OSError):
+			return {'progress': 0, 'status': 'UNKNOWN'}
+	return {'progress': 0, 'status': 'No progress data found.'}
 
 
 def save_progress(task_id: str, progress_data: dict) -> None:
 	progress_file = f"{os.environ.get('SEA_JOB_DIR')}/{task_id}/.progress"
-	# update the progress file with the new data
 	old_progress_data = get_progress(task_id)
 	updated_progress_data = {**old_progress_data, **progress_data}
-	print(updated_progress_data)
+	tmp_file = progress_file + ".tmp"
 	try:
-		with open(progress_file, 'w') as f:
+		with open(tmp_file, 'w') as f:
 			json.dump(updated_progress_data, f)
+		os.replace(tmp_file, progress_file)
 		return "Progress saved."
 	except Exception as e:
 		raise Exception(f"Error saving progress: {str(e)}")
