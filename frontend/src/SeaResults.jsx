@@ -790,6 +790,10 @@ export default function Result() {
                                                                 </a>
                                                             ) : col === 'p_value' && typeof item[col] === 'number' ? (
                                                                 item[col].toExponential(4)
+                                                            ) : col === 'Uniprot_ID' ? (
+                                                                item[col]
+                                                                    ? <a href={`https://chembl.docking.org/dataset/30uM/${item[col]}.smi`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-800 underline">{item[col]}</a>
+                                                                    : '—'
                                                             ) : col === 'affinity_pred_value' ? (
                                                                 item[col] != null ? (typeof item[col] === 'number' ? item[col].toFixed(3) : item[col]) : '—'
                                                             ) : col === 'affinity_probability_binary' ? (
