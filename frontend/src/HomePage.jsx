@@ -303,7 +303,9 @@ function HomePage() {
             </p>
             
             <pre className="whitespace-pre font-mono text-sm bg-gray-100 p-4 rounded-lg overflow-x-auto mb-3">
-              {'<smiles> <compound_id>'}
+              <code>
+                {'<smiles> <compound_id>'}
+              </code>
             </pre>
             
             <p className="mb-2">ZINC ID can also be used. For example:</p>
@@ -475,7 +477,11 @@ HDAC1 [O-]C(=O)CCC butyrate`}
               </div>
             )}
 
-            <div className="mt-10 flex items-center justify-center gap-x-6">
+            <p className="mt-6 text-center text-xs text-gray-500 bg-gray-100 rounded-md px-3 py-2">
+              Identical queries are cached to increase efficiency and reduce redundant computation.
+            </p>
+
+            <div className="mt-4 flex items-center justify-center gap-x-6">
               {isLoading ? (
                 <div className="flex items-center gap-2">
                   <button className="rounded-md bg-indigo-500 px-3.5 py-2.5 text-md font-semibold text-white shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 flex items-center gap-2" disabled>

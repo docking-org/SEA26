@@ -695,15 +695,14 @@ export default function CompoundVsTarget() {
             }}>
                 {/* Heatmap table */}
                 <div style={{
-                    flex: '1 1 0%',
-                    minWidth: 0,
-                    maxWidth: isMobile ? '100%' : '50%',
-                    height: '100%',
-                    overflow: 'auto',
+                    flex: '1 1 auto',
+                    minWidth: isMobile ? '100%' : '300px',
+                    width: isMobile ? '100%' : undefined,
+                    overflowX: 'auto',
                 }}>
                     {tableData && (
                         <div style={{
-                            display: 'flex'
+                            display: 'flex',
                         }}>
                             <table
                                 ref={heatmapRef}
@@ -775,9 +774,10 @@ export default function CompoundVsTarget() {
 
                 {/* Right column: molecule viewer + Boltz card */}
                 <div ref={rightColumnRef} style={{
-                    flex: '1 1 0%',
-                    minWidth: 0,
-                    width: '100%',
+                    flex: '0 0 auto',
+                    minWidth: isMobile ? '100%' : '320px',
+                    maxWidth: isMobile ? '100%' : '480px',
+                    width: isMobile ? '100%' : undefined,
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '20px',
@@ -786,6 +786,8 @@ export default function CompoundVsTarget() {
                     <div style={{
                         position: 'sticky',
                         top: '20px',
+                        maxHeight: 'calc(100vh - 40px)',
+                        overflowY: 'auto',
                     }}>
                     <div style={{
                         backgroundColor: 'white',
@@ -1167,7 +1169,7 @@ export default function CompoundVsTarget() {
                     {/* Submitted Boltz jobs table */}
                     {isInternal && Object.keys(boltzJobs).length > 0 && (() => {
                         const jobsByTarget = Object.entries(boltzJobs).reduce((acc, [jobKey, info]) => {
-                            const target = info.chembl_id || '—';
+                            const target = info.chembl_id || jobKey.split('__')[0] || '—';
                             if (!acc[target]) acc[target] = [];
                             acc[target].push([jobKey, info]);
                             return acc;
@@ -1192,26 +1194,30 @@ export default function CompoundVsTarget() {
                                                 const color = statusColors[info.status] || '#6b7280';
                                                 const isLast = i === jobs.length - 1;
                                                 return (
-                                                    <tr key={jobKey} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f9fafb' }} onMouseEnter={() => handleJobRowHover(info.chembl_id, info.ligand)} onMouseLeave={handleJobRowLeave}>
+                                                    <tr key={jobKey} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f9fafb' }} onMouseEnter={() => handleJobRowHover(info.chembl_id || jobKey.split('__')[0], info.ligand || jobKey.split('__').slice(1).join('__'))} onMouseLeave={handleJobRowLeave}>
                                                         {i === 0 && (
                                                             <td rowSpan={jobs.length} style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', color: '#374151', fontWeight: '600', verticalAlign: 'middle' }}>
                                                                 {target}
                                                             </td>
                                                         )}
-                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#374151' }}>{info.ligand || '—'}</td>
+                                                        <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#374151' }}>{info.ligand || jobKey.split('__').slice(1).join('__') || '—'}</td>
                                                         <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#6b7280', fontFamily: 'monospace' }}>{info.task_id || '—'}</td>
                                                         <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb' }}>
                                                             <span style={{ color, fontWeight: '500' }}>{info.status}</span>
                                                         </td>
                                                         <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb' }}>
-                                                            {info.status === 'done' && (
-                                                                <a
-                                                                    href={`/api/boltz_download?task_id=${taskId}&chembl_id=${info.chembl_id}${info.ligand ? `&ligand=${encodeURIComponent(info.ligand)}` : ''}`}
-                                                                    style={{ color: '#6366f1', textDecoration: 'underline' }}
-                                                                >
-                                                                    Download
-                                                                </a>
-                                                            )}
+                                                            {info.status === 'done' && (() => {
+                                                                const chemblId = info.chembl_id || jobKey.split('__')[0];
+                                                                const ligandName = info.ligand || jobKey.split('__').slice(1).join('__');
+                                                                return (
+                                                                    <a
+                                                                        href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}${ligandName ? `&ligand=${encodeURIComponent(ligandName)}` : ''}`}
+                                                                        style={{ color: '#6366f1', textDecoration: 'underline' }}
+                                                                    >
+                                                                        Download
+                                                                    </a>
+                                                                );
+                                                            })()}
                                                         </td>
                                                     </tr>
                                                 );

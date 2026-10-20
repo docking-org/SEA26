@@ -55,6 +55,7 @@ services:
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - ALTCHA_HMAC_SECRET=${ALTCHA_HMAC_SECRET}
       - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE}
+      - SEA_NUM_SLOTS=${SEA_NUM_SLOTS:-4}
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
@@ -93,10 +94,15 @@ services:
       - SEA_JOB_DIR=${SEA_JOB_DIR}
       - BOLTZ_BIN=${BOLTZ_BIN}
       - BOLTZ_MAX_QUEUED=${BOLTZ_MAX_QUEUED:-10}
+      - BOLTZ_NUM_GPUS=${BOLTZ_NUM_GPUS:-4}
+      - NUMBA_CACHE_DIR=/tmp/numba_cache
+      - MPLCONFIGDIR=/tmp/matplotlib
+      - XDG_CONFIG_HOME=/tmp/xdg_config
+      - TRITON_CACHE_DIR=/tmp/triton_cache
     volumes:
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
       - /scratch/sea_boltz:/scratch/sea_boltz
-    command: celery -A backend.app.celery_worker worker -n boltzworker -Q boltz --concurrency=1 --loglevel=info
+    command: celery -A backend.app.celery_worker worker -n boltzworker -Q boltz-gpu0,boltz-gpu1,boltz-gpu2,boltz-gpu3 --concurrency=1 --loglevel=info
 
 
 

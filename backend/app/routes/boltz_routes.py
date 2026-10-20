@@ -26,6 +26,12 @@ router = APIRouter()
 _TERMINAL_STATES = {"done", "failed"}
 
 
+def _pick_cuda_device(job_name: str) -> str:
+    devices_str = os.getenv("BOLTZ_CUDA_DEVICES") or os.getenv("BOLTZ_CUDA_DEVICE", "0")
+    devices = [d.strip() for d in devices_str.split(",") if d.strip()]
+    return devices[hash(job_name) % len(devices)]
+
+
 def _verify_captcha(body: dict, request: Request = None):
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
     if not hmac_secret:
@@ -314,7 +320,7 @@ async def boltz_submit_from_heatmap(request: Request):
     run_path = f"{job_dir}/run.sh"
     if os.path.exists(run_path):
         os.remove(run_path)
-    cuda_device = os.getenv("BOLTZ_CUDA_DEVICE", "0")
+    cuda_device = _pick_cuda_device(job_name)
     with open(run_path, "w") as f:
         f.write(
             "#!/usr/bin/env bash\nset -euo pipefail\n"
@@ -345,9 +351,11 @@ async def boltz_submit_from_heatmap(request: Request):
         }
         _save_boltz_jobs(jobs_file, existing)
 
+    _total_gpus = int(os.getenv("BOLTZ_NUM_GPUS", "4"))
+    _gpu_queue = f"boltz-gpu{hash(job_name) % _total_gpus}"
     run_boltz_job.apply_async(
         args=[task_id, job_name, boltz_dir, run_path],
-        queue="boltz",
+        queue=_gpu_queue,
         task_id=task_uuid,
     )
     return {"status": "queued", "job_key": job_name}
@@ -367,13 +375,56 @@ def boltz_job_status(request: Request):
     jobs = _load_boltz_jobs(jobs_file)
     out = {}
     for job_key, info in jobs.items():
+        chembl_id = info.get("chembl_id")
+        ligand = info.get("ligand")
+        if not chembl_id:
+            parts = job_key.split("__", 1)
+            chembl_id = parts[0]
+            ligand = parts[1] if len(parts) > 1 else None
         out[job_key] = {
             "task_id": info.get("celery_task_id"),
-            "chembl_id": info.get("chembl_id", job_key),
-            "ligand": info.get("ligand"),
+            "chembl_id": chembl_id,
+            "ligand": ligand,
             "status": info.get("status", "unknown"),
         }
     return out
+
+
+@router.get("/boltz_download_all", dependencies=[Depends(_require_internal)])
+def boltz_download_all(request: Request):
+    task_id = request.query_params.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+
+    boltz_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/boltz_jobs"
+    jobs_file = f"{boltz_dir}/.boltz_jobs.json"
+    if not os.path.exists(jobs_file):
+        raise HTTPException(status_code=404, detail="No Boltz jobs for this task")
+
+    boltz_jobs = _load_boltz_jobs(jobs_file)
+    done_jobs = [key for key, info in boltz_jobs.items() if info.get("status") == "done"]
+    if not done_jobs:
+        raise HTTPException(status_code=404, detail="No completed Boltz jobs yet")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for job_name in done_jobs:
+            pred_dir = os.path.join(
+                boltz_dir, job_name, "boltz_out",
+                f"boltz_results_{job_name}", "predictions", job_name,
+            )
+            if not os.path.isdir(pred_dir):
+                continue
+            for fpath in glob.glob(os.path.join(pred_dir, "**", "*"), recursive=True):
+                if os.path.isfile(fpath):
+                    zf.write(fpath, arcname=os.path.join(job_name, os.path.relpath(fpath, pred_dir)))
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=\"boltz_{task_id}_all.zip\""},
+    )
 
 
 @router.get("/boltz_download", dependencies=[Depends(_require_internal)])
@@ -408,8 +459,15 @@ def boltz_download(request: Request):
     if os.path.exists(jobs_file):
         boltz_jobs = _load_boltz_jobs(jobs_file)
         for jkey, info in boltz_jobs.items():
-            if info.get("chembl_id") == chembl_id:
-                if ligand_filter is None or info.get("ligand") in ligand_filter:
+            # Prefer stored chembl_id; fall back to parsing the job key (for
+            # Phase-4 auto-dispatched jobs that pre-date the metadata fix).
+            jchembl = info.get("chembl_id")
+            if not jchembl:
+                parts = jkey.split("__", 1)
+                jchembl = parts[0]
+            jligand = info.get("ligand") or (parts[1] if len(parts) > 1 else None)
+            if jchembl == chembl_id:
+                if ligand_filter is None or jligand in ligand_filter:
                     if jkey not in job_names:
                         job_names.append(jkey)
 
