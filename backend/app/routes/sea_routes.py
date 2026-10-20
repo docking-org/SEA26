@@ -4,6 +4,7 @@ import uuid
 import json
 import pickle
 import time
+import hashlib
 from datetime import datetime
 from typing import Union
 
@@ -21,8 +22,13 @@ from ..celery_worker import (
     redis_cache,
     acquire_job_slot,
     release_job_slot,
+    get_next_sea_slot,
+    get_cached_job_id,
+    set_cached_job_id,
+    refresh_cached_job_ttl,
     RateLimitExceeded,
 )
+import numpy as np
 from ..helper import (
     tsv2json,
     init_progress_file,
@@ -30,10 +36,24 @@ from ..helper import (
     get_progress,
     load_gev_params,
     validate_smiles_input,
+    get_smiles_property,
 )
 from ..utils.sea_tools import get_target_files
 
 router = APIRouter()
+
+
+def _compute_input_hash(query: str) -> str:
+    """SHA256 of sorted, salt-stripped SMILES (names ignored) for cache keying."""
+    smiles_list = []
+    for line in query.strip().splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        smiles = parts[1] if len(parts) >= 3 else parts[0]
+        smiles_list.append(remove_salt(smiles))
+    smiles_list.sort()
+    return hashlib.sha256("\n".join(smiles_list).encode()).hexdigest()
 
 
 @router.post("/submit")
@@ -65,19 +85,33 @@ async def submit_task(request: Request) -> dict[str, str]:
         if not verified:
             raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
 
+    input_hash = _compute_input_hash(query)
+    cached_id = get_cached_job_id(input_hash)
+    if cached_id:
+        cached_job_dir = f"{os.getenv('SEA_JOB_DIR')}/{cached_id}"
+        if os.path.isdir(cached_job_dir):
+            refresh_cached_job_ttl(input_hash)
+            return {"task_id": cached_id}
+        # stale entry (job expired) — fall through and run fresh
+
     task_id = str(uuid.uuid4().hex[:12])
-    job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
-    _mkdir_(job_dir)
-    init_progress_file(task_id)
 
     try:
         acquire_job_slot(task_id)
     except RateLimitExceeded:
         return JSONResponse(status_code=429, content={"detail": "Server is busy. Please try again later."})
 
+    # Create job artifacts only after rate-limit check passes so a rejected
+    # request never leaves a directory stuck at PENDING with no input.
+    job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
+    _mkdir_(job_dir)
+    init_progress_file(task_id)
+
     result = await _submit_sea_job(task_id, query)
     if "error" in result:
         release_job_slot(task_id)
+    else:
+        set_cached_job_id(input_hash, task_id)
     return {"task_id": task_id}
 
 
@@ -117,8 +151,22 @@ async def _submit_sea_job(task_id: str, input_data: str):
         smiles_key = f"input:{task_id}"
         redis_cache.setex(smiles_key, 86400, pickle.dumps(smiles_test))
 
+        # Pre-compute fingerprints once here so batch tasks can skip recomputing
+        # them on every chunk — big speedup for multi-molecule submissions.
+        fp_key = f"fp_test:{task_id}"
+        data_test, _ = get_smiles_property(smiles_test)
+        fp_test = data_test[np.arange(2048)].to_numpy()
+        redis_cache.setex(fp_key, 86400, pickle.dumps(fp_test))
+
         CHUNK_SIZE = 100
         target_chunks = [list_chembl[i:i + CHUNK_SIZE] for i in range(0, len(list_chembl), CHUNK_SIZE)]
+
+        # Route this job's chunks to a dedicated slot queue so the worker
+        # round-robins between concurrent jobs instead of processing them FIFO.
+        # Use a Redis round-robin counter (not hash) so consecutive submissions
+        # always land on DIFFERENT slots — hash collisions caused starvation.
+        _num_slots = int(os.getenv("SEA_NUM_SLOTS", "4"))
+        sea_queue = f"sea-slot-{get_next_sea_slot(_num_slots)}"
 
         signatures = [
             sea_target_score_batch.s(
@@ -126,11 +174,12 @@ async def _submit_sea_job(task_id: str, input_data: str):
                 parent_task_id=task_id,
                 total_targets=total,
                 smiles_key=smiles_key,
+                fp_key=fp_key,
                 tc_cutoff=tc_cutoff,
                 gev_c=gev_c,
                 gev_loc=gev_loc,
                 gev_scale=gev_scale,
-            )
+            ).set(queue=sea_queue)
             for chunk in target_chunks
         ]
         callback = postprocess_sea_job.s(
@@ -173,6 +222,13 @@ async def _submit_sea_job(task_id: str, input_data: str):
 async def get_result(request: Request):
     task_id = request.query_params.get("taskId")
 
+    job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}"
+    if not os.path.isdir(job_dir):
+        return {
+            "status": "EXPIRED",
+            "error": "Job results are no longer available. Results are automatically removed after 96 hours.",
+        }
+
     job_info = get_progress(task_id)
 
     meta = celery.backend.get_task_meta(task_id)
@@ -211,6 +267,50 @@ async def get_result(request: Request):
             for parts in [x.strip().split()]
         ]
         job_info["input"] = smiles_test
+
+    boltz_jobs_file = f"{job_dir}/boltz_jobs/.boltz_jobs.json"
+    if os.path.exists(boltz_jobs_file):
+        with open(boltz_jobs_file) as f:
+            boltz_jobs = json.load(f)
+
+        statuses = [v.get("status", "queued") for v in boltz_jobs.values()]
+        job_info["boltz_status"] = {
+            "total":   len(statuses),
+            "queued":  statuses.count("queued"),
+            "running": statuses.count("running"),
+            "done":    statuses.count("done"),
+            "failed":  statuses.count("failed"),
+        }
+
+        if job_info.get("result"):
+            target_affinity = {}
+            for job_name, meta in boltz_jobs.items():
+                parts = job_name.split("__", 1)
+                if len(parts) != 2:
+                    continue
+                target_id, _ = parts
+                affinity_path = (
+                    f"{job_dir}/boltz_jobs/{job_name}/boltz_out/"
+                    f"boltz_results_{job_name}/predictions/{job_name}/affinity_{job_name}.json"
+                )
+                if not os.path.exists(affinity_path):
+                    continue
+                with open(affinity_path) as f:
+                    aff = json.load(f)
+                prob = aff.get("affinity_probability_binary") or 0.0
+                existing = target_affinity.get(target_id)
+                if existing is None or prob > existing["affinity_probability_binary"]:
+                    target_affinity[target_id] = {
+                        "affinity_pred_value": aff.get("affinity_pred_value"),
+                        "affinity_probability_binary": prob,
+                    }
+            if target_affinity:
+                for row in job_info["result"]:
+                    ta = target_affinity.get(row.get("Target_Chembl_ID"))
+                    if ta:
+                        row["affinity_pred_value"]         = ta["affinity_pred_value"]
+                        row["affinity_probability_binary"]  = ta["affinity_probability_binary"]
+
     return job_info
 
 

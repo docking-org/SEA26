@@ -10,7 +10,6 @@ export default function Result() {
     const [targetName, setTargetName] = useState('');
     const [Uniprot_ID, setUniprot_ID] = useState('');
     const [Uniprot_Accession, setUniprot_Accession] = useState('');
-    const [species, setSpecies] = useState('');
     const [percent1Done, setPercent1Done] = useState(0);
     const [result, setResult] = useState([]);
     const [queryCompounds, setQueryCompounds] = useState([]);
@@ -26,6 +25,8 @@ export default function Result() {
     const [activeButton, setActiveButton] = useState(false);
     const [taskStatus, setTaskStatus] = useState(null);
     const [errorMessage, setErrorMessage] = useState(null);
+    const [boltzStatus, setBoltzStatus] = useState(undefined); // undefined = never fetched; null = fetched, no boltz jobs
+    const [boltzJobs, setBoltzJobs] = useState({}); // job_key -> { chembl_id, ligand, status }
 
     // RDkit images
     const [rdkitReady, setRdkitReady] = useState(false);
@@ -92,6 +93,17 @@ export default function Result() {
             const data = await response.json();
 
             setTaskStatus(data.status);
+            setBoltzStatus(data.boltz_status ?? null); // null means fetched but no boltz jobs
+            if (data.boltz_status) {
+                fetch(`/api/boltz_job_status?task_id=${taskId}`)
+                    .then(r => r.json())
+                    .then(jobs => setBoltzJobs(jobs || {}))
+                    .catch(() => {});
+            }
+            if (data.status === 'EXPIRED') {
+                setErrorMessage(data.error || 'Job results are no longer available.');
+                return;
+            }
             if (data.status === 'SUCCESS'){
                 setPercent1Done(100);
                 setResult(data.result);
@@ -243,13 +255,23 @@ export default function Result() {
         }
     }, [taskId]);
 
-    // Poll task status every 3 seconds, stop when done
+    // Stable key derived from boltzStatus values — prevents the effect from re-firing
+    // on every poll when the server returns a new object with unchanged values.
+    const boltzStatusKey = boltzStatus === undefined ? 'undefined'
+        : boltzStatus === null ? 'null'
+        : `${boltzStatus.running}|${boltzStatus.queued}|${boltzStatus.done}|${boltzStatus.failed}`;
+
+    // Poll task status; fast initially (500ms) then slow down to 3s once running
     useEffect(() => {
-        if (taskStatus === 'SUCCESS' || taskStatus === 'ERROR') return;
+        if (taskStatus === 'EXPIRED') return;
+        // undefined = never fetched → keep polling; null = no boltz jobs → settled
+        const boltzSettled = boltzStatus !== undefined && (!boltzStatus || (boltzStatus.running === 0 && boltzStatus.queued === 0));
+        if ((taskStatus === 'SUCCESS' || taskStatus === 'ERROR') && boltzSettled) return;
         checkTaskStatus();
-        const interval = setInterval(checkTaskStatus, 3000);
+        const isEarlyPhase = taskStatus === null || taskStatus === 'PENDING';
+        const interval = setInterval(checkTaskStatus, isEarlyPhase ? 500 : 3000);
         return () => clearInterval(interval);
-    }, [taskId, taskStatus]);
+    }, [taskId, taskStatus, boltzStatusKey]);
 
     // Load RDKit.js
     useEffect(() => {
@@ -294,7 +316,6 @@ export default function Result() {
                         setTargetName(match.Target_Name || '');
                         setUniprot_ID(match.Uniprot_ID || '');
                         setUniprot_Accession(match.Uniprot_Accession || '');
-                        setSpecies(match.Target_Species || '');
                     }
                 }
             } catch (e) {
@@ -345,7 +366,7 @@ export default function Result() {
                             <div>
                                 <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Tanimoto Similarity Results</h2>
                                 <div className="flex flex-col md:flex-row md:items-center mb-6">
-                                    <p className="text-sm text-gray-600 mr-4">Query Compound:</p>
+                                    <p className="text-md text-gray-600 mr-4">Query Compound:</p>
                                     <select
                                         className="px-3 py-4 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm font-medium"
                                         onChange={(e) => {
@@ -371,7 +392,6 @@ export default function Result() {
                                 <p><span className="font-semibold">Target Name:</span> {targetName}</p>
                                 <p><span className="font-semibold">Uniprot ID:</span> {Uniprot_ID}</p>
                                 <p><span className="font-semibold">Uniprot Accession:</span> {Uniprot_Accession}</p>
-                                <p><span className="font-semibold">Species:</span> {species}</p>
                             </div>
                         </div>
                         <div className="mt-6 p-4 bg-gray-50 rounded">
@@ -529,9 +549,21 @@ export default function Result() {
             <div className="px-4 py-4 sm:px-10 sm:py-5 bg-gray-50 rounded-lg" >
                 <h1 className="text-2xl  font-bold mb-4">Result Page</h1>
                 <p className="mb-2">Your task ID is: {taskId}</p>
-                
-                {/* Progress Bar */}
-                <div className="mb-6">
+
+                {taskStatus === 'EXPIRED' && (
+                    <div className="p-5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900">
+                        <p className="font-semibold text-base mb-1">Results No Longer Available</p>
+                        <p className="text-sm">Job results are automatically removed after 96 hours to free up storage. Please resubmit your query to generate new results.</p>
+                    </div>
+                )}
+
+                {/* Progress Bar — hidden once expired */}
+                {taskStatus !== 'EXPIRED' && taskStatus !== 'SUCCESS' && (
+                    <p className="text-xs text-gray-500 bg-gray-100 rounded-md px-3 py-2 mb-3">
+                        Identical queries are cached to increase efficiency and reduce redundant computation.
+                    </p>
+                )}
+                {taskStatus !== 'EXPIRED' && <div className="mb-6">
                     <div className="flex justify-between items-center mb-1">
                         <span className="text-sm font-medium text-gray-700">Progress</span>
                         <span className="text-sm font-medium text-gray-700">{percent1Done}%</span>
@@ -560,7 +592,7 @@ export default function Result() {
                                     ? 'Post-processing output...'
                                     : 'Scoring targets...'}
                     </p>
-                </div>
+                </div>}
                 {taskStatus === 'ERROR' && (
                     <div className="p-4 bg-red-100 border-l-4 border-red-500 text-red-700 mb-4">
                         <p className="font-medium">Task Failed</p>
@@ -573,7 +605,7 @@ export default function Result() {
                     </div>
                 )}
            
-                {percent1Done === 100 && result.length > 0 && (
+                {result.length > 0 && (
                     <div>
                         <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 my-4">
                         <a
@@ -630,7 +662,52 @@ export default function Result() {
                                 </div>
                             </div>
                         )}
-                        <h2 className="mt-6 mb-2 text-xl font-semibold">Results:</h2>
+                        {inputCompounds.length === 1 ? (
+                            <p className="text-xs text-gray-500 bg-gray-100 rounded-md px-3 py-2 mt-4">
+                                Boltz2 structure predictions are automatically queued for the top 5 novel targets.
+                            </p>
+                        ) : inputCompounds.length > 1 ? (
+                            <p className="text-xs text-gray-500 bg-gray-100 rounded-md px-3 py-2 mt-4">
+                                Boltz2 auto-predictions are only available for single-molecule submissions.
+                            </p>
+                        ) : null}
+                        <div className="mt-4 mb-2 flex items-center gap-3 flex-wrap">
+                            <h2 className="text-xl font-semibold">Results:</h2>
+                            {boltzStatus && (() => {
+                                const isActive = boltzStatus.running > 0 || boltzStatus.queued > 0;
+                                const allDone = !isActive && boltzStatus.done > 0;
+                                const allFailed = !isActive && boltzStatus.done === 0 && boltzStatus.failed > 0;
+                                const parts = [];
+                                if (boltzStatus.running > 0) parts.push({ label: `${boltzStatus.running} running`, color: 'text-blue-600' });
+                                if (boltzStatus.queued  > 0) parts.push({ label: `${boltzStatus.queued} queued`,  color: 'text-gray-500' });
+                                if (boltzStatus.done    > 0) parts.push({ label: `${boltzStatus.done} done`,     color: 'text-green-600' });
+                                if (boltzStatus.failed  > 0) parts.push({ label: `${boltzStatus.failed} failed`, color: 'text-red-500' });
+                                return (
+                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+                                        isActive  ? 'bg-blue-100 text-blue-700' :
+                                        allDone   ? 'bg-green-100 text-green-700' :
+                                        allFailed ? 'bg-red-100 text-red-700' :
+                                                    'bg-gray-100 text-gray-600'
+                                    }`}>
+                                        {isActive && (
+                                            <svg className="animate-spin h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none">
+                                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                                            </svg>
+                                        )}
+                                        {!isActive && allDone && <span>✓</span>}
+                                        {!isActive && allFailed && <span>✗</span>}
+                                        <span>Boltz-2{isActive ? ':' : allDone ? ' complete' : allFailed ? ' failed' : ''}</span>
+                                        {parts.map((p, i) => (
+                                            <span key={i} className={p.color}>
+                                                {i > 0 && <span className="text-gray-400 mx-0.5">/</span>}
+                                                {p.label}
+                                            </span>
+                                        ))}
+                                    </span>
+                                );
+                            })()}
+                        </div>
                         <div className="overflow-x-auto rounded-lg shadow">
                             {(() => {
                                 const displayColumns = [
@@ -638,12 +715,33 @@ export default function Result() {
                                     'Target_Name',
                                     'Uniprot_ID',
                                     'Uniprot_Accession',
-                                    'Target_Species',
                                     'Z_score',
                                     'p_value',
-                                    'MaxTc'
+                                    'MaxTc',
+                                    'affinity_pred_value',
+                                    'affinity_probability_binary',
                                 ];
+                                const colLabels = {
+                                    Target_Chembl_ID: 'ChEMBL ID',
+                                    Target_Name: 'Target',
+                                    Uniprot_ID: 'UniProt ID',
+                                    Uniprot_Accession: 'UniProt Acc.',
+                                    Z_score: 'Z-score',
+                                    p_value: 'p-value',
+                                    MaxTc: 'MaxTc',
+                                    affinity_pred_value: 'ΔG pred',
+                                    affinity_probability_binary: 'Bind prob.',
+                                };
                                 const columns = displayColumns.filter((col) => col in result[0]);
+                                // chembl_id -> set of done ligand names for that target
+                                const boltzDoneByChembl = Object.values(boltzJobs).reduce((acc, info) => {
+                                    if (info.status === 'done' && info.chembl_id) {
+                                        if (!acc[info.chembl_id]) acc[info.chembl_id] = [];
+                                        acc[info.chembl_id].push(info.ligand);
+                                    }
+                                    return acc;
+                                }, {});
+                                const showBoltzCol = Object.keys(boltzDoneByChembl).length > 0;
                                 return (
                                     <table className="min-w-full divide-y divide-gray-200 bg-white">
                                         <thead className="bg-blue-100">
@@ -652,19 +750,28 @@ export default function Result() {
                                                     <th
                                                         key={key}
                                                         onClick={() => SORTABLE_RESULT_COLS.has(key) && handleResultSort(key)}
+                                                        title={key}
                                                         className={`px-2 py-2 sm:px-4 text-left text-xs sm:text-sm font-bold text-blue-700 uppercase tracking-wider border-b ${SORTABLE_RESULT_COLS.has(key) ? 'cursor-pointer select-none hover:bg-blue-200' : ''}`}
                                                     >
-                                                        {key}{SORTABLE_RESULT_COLS.has(key) && (
+                                                        {colLabels[key] ?? key}{SORTABLE_RESULT_COLS.has(key) && (
                                                             <span className="ml-1" style={{ opacity: resultSortBy === key ? 1 : 0.3 }}>
                                                                 {resultSortBy === key ? (resultSortDir === 'desc' ? '▼' : '▲') : '▼'}
                                                             </span>
                                                         )}
                                                     </th>
                                                 ))}
+                                                {showBoltzCol && (
+                                                    <th className="px-2 py-2 sm:px-4 text-left text-xs sm:text-sm font-bold text-blue-700 uppercase tracking-wider border-b">
+                                                        Boltz-2
+                                                    </th>
+                                                )}
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {sortedResult.map((item, index) => (
+                                            {sortedResult.map((item, index) => {
+                                                const chemblId = item['Target_Chembl_ID'];
+                                                const doneLigands = boltzDoneByChembl[chemblId];
+                                                return (
                                                 <tr
                                                     key={index}
                                                     className={index % 2 === 0 ? "bg-blue-50" : "bg-white"}
@@ -677,19 +784,39 @@ export default function Result() {
                                                             {col === 'Target_Chembl_ID' ? (
                                                                 <a
                                                                     href={`/result?taskId=${taskId}&targetChemblId=${item[col]}`}
-                                                                    className="text-blue-600 hover:text-blue-800 underline" 
+                                                                    className="text-blue-600 hover:text-blue-800 underline"
                                                                 >
                                                                     {item[col]}
                                                                 </a>
                                                             ) : col === 'p_value' && typeof item[col] === 'number' ? (
                                                                 item[col].toExponential(4)
+                                                            ) : col === 'affinity_pred_value' ? (
+                                                                item[col] != null ? (typeof item[col] === 'number' ? item[col].toFixed(3) : item[col]) : '—'
+                                                            ) : col === 'affinity_probability_binary' ? (
+                                                                item[col] != null ? (typeof item[col] === 'number' ? `${(item[col] * 100).toFixed(1)}%` : item[col]) : '—'
                                                             ) : (
                                                                 item[col]
                                                             )}
                                                         </td>
                                                     ))}
+                                                    {showBoltzCol && (
+                                                        <td className="px-2 py-2 sm:px-4 text-xs sm:text-sm border-b">
+                                                            {doneLigands && doneLigands.length > 0 ? (
+                                                                <a
+                                                                    href={`/api/boltz_download?task_id=${taskId}&chembl_id=${chemblId}`}
+                                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 hover:bg-indigo-200 whitespace-nowrap"
+                                                                    title={`Download Boltz-2 structures for ${chemblId}`}
+                                                                >
+                                                                    ↓ Result
+                                                                </a>
+                                                            ) : (
+                                                                <span className="text-gray-300">—</span>
+                                                            )}
+                                                        </td>
+                                                    )}
                                                 </tr>
-                                            ))}
+                                                );
+                                            })}
                                         </tbody>
                                     </table>
                                 );

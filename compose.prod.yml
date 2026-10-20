@@ -74,19 +74,18 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    command: celery -A backend.app.celery_worker worker -n sea-worker --loglevel=debug --concurrency=10 --max-tasks-per-child=10
+    command: celery -A backend.app.celery_worker worker -n sea-worker -Q celery,sea-slot-0,sea-slot-1,sea-slot-2,sea-slot-3 --loglevel=debug --concurrency=10 --max-tasks-per-child=10 --prefetch-multiplier=1
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
 
- #### BOLTZ WORKER (concurrency=1 — one job at a time) ####
-  boltzworker:
+#### BOLTZ WORKERS — one per GPU ####
+  x-boltzworker: &boltzworker-base
     build:
       context: .
-      dockerfile: Dockerfile.dev
-    # container_name: sea-boltzworker
-    runtime: nvidia
+      dockerfile: Dockerfile.prod
     user: "1020:1020"
+    runtime: nvidia
     restart: unless-stopped
     shm_size: '15gb'
     networks:
@@ -98,8 +97,39 @@ services:
       - .env
     environment:
       - USER=www
-      - NVIDIA_VISIBLE_DEVICES=2
-    command: celery -A backend.app.celery_worker worker -n boltzworker -Q boltz --concurrency=1 --pool solo --loglevel=info
+      - NVIDIA_VISIBLE_DEVICES=0   # remapped to 0 inside container by Docker
+      - BOLTZ_CUDA_DEVICES=0
+      - BOLTZ_NUM_GPUS=${BOLTZ_NUM_GPUS:-4}
+    volumes:
+      - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
+      - /nfs/home/khtang/.conda/envs/sea25:/nfs/home/khtang/.conda/envs/sea25:ro
+      - /scratch/sea_boltz:/scratch/sea_boltz
+
+  boltzworker-gpu0:
+    <<: *boltzworker-base
+    command: celery -A backend.app.celery_worker worker -n boltzworker-gpu0@%h -Q boltz-gpu0 --concurrency=1 --pool solo --loglevel=info
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+
+  boltzworker-gpu1:
+    <<: *boltzworker-base
+    command: celery -A backend.app.celery_worker worker -n boltzworker-gpu1@%h -Q boltz-gpu1 --concurrency=1 --pool solo --loglevel=info
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+
+  boltzworker-gpu2:
+    <<: *boltzworker-base
+    command: celery -A backend.app.celery_worker worker -n boltzworker-gpu2@%h -Q boltz-gpu2 --concurrency=1 --pool solo --loglevel=info
     deploy:
       resources:
         reservations:
@@ -107,11 +137,17 @@ services:
             - driver: nvidia
               device_ids: ['2']
               capabilities: [gpu]
-    volumes:
-      - ./backend:/home/sea/backend
-      - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
-      - /nfs/home/khtang/.conda/envs/sea25:/nfs/home/khtang/.conda/envs/sea25:ro
-      - /scratch/sea_boltz:/scratch/sea_boltz
+
+  boltzworker-gpu3:
+    <<: *boltzworker-base
+    command: celery -A backend.app.celery_worker worker -n boltzworker-gpu3@%h -Q boltz-gpu3 --concurrency=1 --pool solo --loglevel=info
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['3']
+              capabilities: [gpu]
 
 
 ##### ----- NETWORKS ------ #####
