@@ -74,7 +74,7 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    command: celery -A backend.app.celery_worker worker -n sea-worker -Q celery,sea-slot-0,sea-slot-1,sea-slot-2,sea-slot-3 --loglevel=debug --concurrency=10 --max-tasks-per-child=10 --prefetch-multiplier=1
+    command: celery -A backend.app.celery_worker worker -n sea-worker -Q celery,sea-slot-0,sea-slot-1,sea-slot-2,sea-slot-3 --loglevel=debug --concurrency=32 --max-tasks-per-child=100 --prefetch-multiplier=1
     volumes:
       - ${SEA_DATA_FOLDER}:${SEA_DATA_FOLDER}
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
