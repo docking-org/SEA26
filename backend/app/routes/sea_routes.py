@@ -315,18 +315,23 @@ async def get_result(request: Request):
 
 
 @router.get("/recent_tasks")
-def get_recent_tasks():
+def get_recent_tasks(limit: int = 100):
     job_dir = os.getenv("SEA_JOB_DIR")
+    cutoff = time.time() - 96 * 3600
+    # scandir gives mtime for free (no extra stat per entry)
+    entries = [e for e in os.scandir(job_dir) if e.stat().st_mtime >= cutoff]
+    entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+    entries = entries[:limit]
     recent_tasks = []
-    for task in os.listdir(job_dir):
-        time_stamp = datetime.fromtimestamp(os.path.getmtime(f"{job_dir}/{task}"))
-        progress = get_progress(task)
+    for entry in entries:
+        mtime = entry.stat().st_mtime
+        time_stamp = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+        progress = get_progress(entry.name)
         recent_tasks.append({
-            "task_id": task,
-            "time_stamp": time_stamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "task_id": entry.name,
+            "time_stamp": time_stamp,
             "status": progress.get("status", "UNKNOWN") if progress else "UNKNOWN",
         })
-    recent_tasks.sort(key=lambda x: x["time_stamp"], reverse=True)
     return {"recent_tasks": recent_tasks}
 
 
