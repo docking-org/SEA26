@@ -707,10 +707,14 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                     os.replace(_tmp, jobs_file)
 
                     # Respect global Boltz cap — count active non-terminal jobs
+                    # Exclude the current task's file (just written above) to avoid
+                    # counting our own pending jobs against the available slots.
                     _terminal = {"done", "failed"}
                     _max_queued = int(os.getenv("BOLTZ_MAX_QUEUED", "10"))
                     _active_count = 0
                     for _jf in glob.glob(f"{job_dir}/*/boltz_jobs/.boltz_jobs.json"):
+                        if f"/{task_id}/" in _jf:
+                            continue
                         try:
                             with open(_jf) as _jfh:
                                 _active_count += sum(1 for _j in json.load(_jfh).values() if _j.get("status") not in _terminal)
