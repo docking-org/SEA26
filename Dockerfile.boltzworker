@@ -1,0 +1,34 @@
+# Boltz worker image — SEA backend + boltz (CUDA 12.8.0)
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /home/sea
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        wget \
+        git \
+        gcc \
+        g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install miniforge3 for conda
+RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda \
+    && rm /tmp/miniforge.sh
+ENV PATH /opt/conda/bin:$PATH
+
+ADD requirements.txt ./
+RUN conda create -c conda-forge -n sea25 rdkit python=3.12 -y
+ENV PATH /opt/conda/envs/sea25/bin:$PATH
+ENV LD_LIBRARY_PATH /opt/conda/envs/sea25/lib:$LD_LIBRARY_PATH
+
+RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
+RUN pip install --no-cache-dir boltz==2.0.3
+
+RUN echo "/usr/lib64" > /etc/ld.so.conf.d/slurm.conf && ldconfig
+RUN groupadd -g 44264 slurm && useradd -r -u 44263 -g slurm -s /usr/sbin/nologin slurm \
+    && groupadd -g 44266 munge && useradd -r -u 44265 -g munge -s /usr/sbin/nologin munge
+
+COPY backend ./backend

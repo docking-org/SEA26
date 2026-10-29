@@ -70,6 +70,44 @@ def _pick_cuda_device(job_name: str) -> str:
     return devices[hash(job_name) % len(devices)]
 
 
+def _acquire_free_gpu(min_free_mib: int = 38000, ttl: int = 7200) -> int | None:
+    """Find the GPU with the most free memory meeting min_free_mib and atomically
+    reserve it via a Redis lock. Returns the GPU index or None if none available.
+    The caller must release the lock via _release_gpu_lock() when done.
+    """
+    import subprocess as _sp
+    try:
+        result = _sp.run(
+            ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        candidates = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split(",")
+            if len(parts) != 2:
+                continue
+            idx, free = int(parts[0].strip()), int(parts[1].strip())
+            if free >= min_free_mib:
+                candidates.append((free, idx))
+        candidates.sort(reverse=True)  # prefer GPU with most free memory
+
+        for _, idx in candidates:
+            lock_key = f"boltz:gpu:{idx}:lock"
+            if r.set(lock_key, "1", nx=True, ex=ttl):
+                return idx
+        return None
+    except Exception as e:
+        print(f"_acquire_free_gpu: error: {e}")
+        return None
+
+
+def _release_gpu_lock(gpu_idx: int) -> None:
+    try:
+        r.delete(f"boltz:gpu:{gpu_idx}:lock")
+    except Exception as e:
+        print(f"_release_gpu_lock: error releasing GPU {gpu_idx}: {e}")
+
+
 def acquire_job_slot(task_id):
     """Acquire an active job slot. Raises RateLimitExceeded if no slots available."""
     key = "active:jobs"
@@ -635,8 +673,9 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                 os.makedirs(boltz_dir, exist_ok=True)
                 _msa_cache_root = os.getenv("BOLTZ_MSA_CACHE_DIR",
                     os.path.join(os.getenv("SEA_JOB_DIR", "/tmp"), "msa_cache"))
-                boltz_bin   = os.getenv("BOLTZ_BIN", "boltz")
-                boltz_cache = os.getenv("BOLTZ_CACHE_DIR", "/scratch/sea_boltz")
+                boltz_bin        = os.getenv("BOLTZ_BIN", "boltz")
+                boltz_cache      = os.getenv("BOLTZ_CACHE_DIR", "/scratch/sea_boltz")
+                boltz_extra_args = os.getenv("BOLTZ_EXTRA_ARGS", "")
                 boltz_jobs  = {}
                 pending_dispatches = []
 
@@ -679,7 +718,6 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                         with open(run_sh_path, "w") as _f:
                             _f.write(
                                 f"#!/bin/bash\n"
-                                f"export CUDA_VISIBLE_DEVICES={_pick_cuda_device(job_name)}\n"
                                 f"export NUMBA_DISABLE_JIT=1\n"
                                 f"export NUMBA_CACHE_DIR=/tmp/numba_cache\n"
                                 f"export MPLCONFIGDIR=/tmp/matplotlib\n"
@@ -687,7 +725,8 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                                 f"export TRITON_CACHE_DIR=/tmp/triton_cache\n"
                                 f"{boltz_bin} predict {os.path.abspath(yaml_path)}"
                                 f" --out_dir {os.path.abspath(jdir)}/boltz_out"
-                                f"{msa_flag} --cache {boltz_cache}\n"
+                                f"{msa_flag} --cache {boltz_cache}"
+                                f"{' ' + boltz_extra_args.strip() if boltz_extra_args.strip() else ''}\n"
                             )
                         os.chmod(run_sh_path, 0o755)
 
@@ -731,25 +770,25 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                         _start_gpu = hash(task_id) % _total_gpus
                         _queue_depths = []
                         for _gi in range(_total_gpus):
-                            _qname = f"boltz-gpu{_gi}"
-                            _queued = int(r.llen(_qname) or 0)
+                            # sum both queues so load-balancing accounts for already-queued auto jobs
+                            _queued = int(r.llen(f"boltz-gpu{_gi}-auto") or 0) + int(r.llen(f"boltz-gpu{_gi}") or 0)
                             _queue_depths.append(_queued)
                         _total_queued = sum(_queue_depths)
                         _free_gpus = sum(1 for d in _queue_depths if d == 0)
                         _n_dispatching = len(pending_dispatches)
                         if _free_gpus == 0:
                             _best = min(range(_total_gpus), key=lambda i: _queue_depths[i])
-                            _gpu_queues = [f"boltz-gpu{_best}"]
+                            _gpu_queues = [f"boltz-gpu{_best}-auto"]
                         elif _free_gpus >= _n_dispatching:
                             _free_indices = [i for i, d in enumerate(_queue_depths) if d == 0]
                             _gpu_queues = [
-                                f"boltz-gpu{_free_indices[(_start_gpu + i) % len(_free_indices)]}"
+                                f"boltz-gpu{_free_indices[(_start_gpu + i) % len(_free_indices)]}-auto"
                                 for i in range(_n_dispatching)
                             ]
                         else:
                             _free_indices = [i for i, d in enumerate(_queue_depths) if d == 0]
                             _gpu_queues = [
-                                f"boltz-gpu{_free_indices[i % len(_free_indices)]}"
+                                f"boltz-gpu{_free_indices[i % len(_free_indices)]}-auto"
                                 for i in range(_n_dispatching)
                             ]
 
@@ -900,22 +939,34 @@ def run_boltz_job(self, task_id: str, job_key: str, boltz_dir: str, run_script: 
         except Exception as e:
             print(f"run_boltz_job: failed to update jobs file for {job_key}: {e}")
 
+    # Atomically acquire a free GPU via Redis lock; retry if none available
+    min_free_mib = int(os.getenv("BOLTZ_MIN_FREE_MEM_MiB", "38000"))
+    gpu_idx = _acquire_free_gpu(min_free_mib)
+    if gpu_idx is None:
+        print(f"run_boltz_job: no GPU with >={min_free_mib} MiB free, retrying in 60s ({job_key})")
+        raise self.retry(countdown=60, max_retries=30)
+
+    print(f"run_boltz_job: acquired GPU {gpu_idx} for {job_key}")
+
     # Mark running
     start_time = time.monotonic()
     _update_jobs({"status": "running", "celery_task_id": self.request.id,
-                  "started_at": _now(), "log_file": log_file})
+                  "started_at": _now(), "log_file": log_file, "gpu": gpu_idx})
 
     # Stream subprocess output to log file and celery stdout
     success = False
     try:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        proc_env = os.environ.copy()
+        proc_env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
         with open(log_file, "w") as lf:
-            lf.write(f"[{_now()}] Starting {job_key}\n")
+            lf.write(f"[{_now()}] Starting {job_key} on GPU {gpu_idx}\n")
             lf.flush()
             proc = subprocess.Popen(
                 ["bash", run_script],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
+                env=proc_env,
             )
             for line in proc.stdout:
                 lf.write(line)
@@ -931,6 +982,8 @@ def run_boltz_job(self, task_id: str, job_key: str, boltz_dir: str, run_script: 
             print(f"run_boltz_job: {job_key} subprocess OK")
     except Exception as e:
         print(f"run_boltz_job: subprocess error for {job_key}: {e}")
+    finally:
+        _release_gpu_lock(gpu_idx)
 
     # Check output files as ground truth (boltz may exit non-zero but still produce output)
     pred_base = os.path.join(boltz_dir, job_key, "boltz_out",

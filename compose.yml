@@ -102,7 +102,7 @@ services:
     volumes:
       - ${SEA_JOB_DIR}:${SEA_JOB_DIR}
       - /scratch/sea_boltz:/scratch/sea_boltz
-    command: celery -A backend.app.celery_worker worker -n boltzworker -Q boltz-gpu0,boltz-gpu1,boltz-gpu2,boltz-gpu3 --concurrency=1 --loglevel=info
+    command: celery -A backend.app.celery_worker worker -n boltzworker -Q boltz-gpu0-auto,boltz-gpu0,boltz-gpu1-auto,boltz-gpu1,boltz-gpu2-auto,boltz-gpu2,boltz-gpu3-auto,boltz-gpu3 --concurrency=1 --loglevel=info
 
 
 
