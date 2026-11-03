@@ -745,27 +745,7 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                         _tmp = _tf.name
                     os.replace(_tmp, jobs_file)
 
-                    # Respect global Boltz cap — count active non-terminal jobs
-                    # Exclude the current task's file (just written above) to avoid
-                    # counting our own pending jobs against the available slots.
-                    _terminal = {"done", "failed", "killed"}
-                    _max_queued = int(os.getenv("BOLTZ_MAX_QUEUED", "10"))
-                    _active_count = 0
-                    for _jf in glob.glob(f"{job_dir}/*/boltz_jobs/.boltz_jobs.json"):
-                        if f"/{task_id}/" in _jf:
-                            continue
-                        try:
-                            with open(_jf) as _jfh:
-                                _active_count += sum(1 for _j in json.load(_jfh).values() if _j.get("status") not in _terminal)
-                        except Exception:
-                            pass
-                    _slots_available = max(0, _max_queued - _active_count)
-                    if _slots_available == 0:
-                        _write_log_(phase4_log, f"Phase 4: Boltz cap reached ({_active_count}/{_max_queued}), skipping auto-dispatch")
-                    else:
-                        pending_dispatches = pending_dispatches[:_slots_available]
-
-                    if _slots_available > 0 and pending_dispatches:
+                    if pending_dispatches:
                         _total_gpus = int(os.getenv("BOLTZ_NUM_GPUS", "4"))
                         _start_gpu = hash(task_id) % _total_gpus
                         _queue_depths = []
@@ -801,10 +781,9 @@ def postprocess_sea_job(group_results, task_id, list_chembl, smiles_test):
                             boltz_jobs[job_name]["celery_task_id"] = _task.id
 
                         _write_log_(phase4_log,
-                            f"Phase 4: queued {len(pending_dispatches)} Boltz job(s) across {len(_rows)} target(s) "
+                            f"Phase 4: queued {len(pending_dispatches)} Boltz auto-job(s) across {len(_rows)} target(s) "
                             f"using {len(set(_gpu_queues))} GPU(s) "
-                            f"(free={_free_gpus}/{_total_gpus}, queued_boltz={_total_queued}, "
-                            f"cap={_active_count + len(pending_dispatches)}/{_max_queued})")
+                            f"(free={_free_gpus}/{_total_gpus}, queued_boltz={_total_queued})")
 
     except Exception as e:
         _write_log_(phase4_log, f"Phase 4 error: {e}")
@@ -940,7 +919,7 @@ def run_boltz_job(self, task_id: str, job_key: str, boltz_dir: str, run_script: 
             print(f"run_boltz_job: failed to update jobs file for {job_key}: {e}")
 
     # Atomically acquire a free GPU via Redis lock; retry if none available
-    min_free_mib = int(os.getenv("BOLTZ_MIN_FREE_MEM_MiB", "38000"))
+    min_free_mib = int(os.getenv("BOLTZ_MIN_FREE_MEM_MiB", "40000"))
     gpu_idx = _acquire_free_gpu(min_free_mib)
     if gpu_idx is None:
         print(f"run_boltz_job: no GPU with >={min_free_mib} MiB free, retrying in 60s ({job_key})")

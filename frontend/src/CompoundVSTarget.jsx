@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import Layout from './components/Layout';
+import { useAuth } from './auth';
 import 'altcha';
 
 // Mirrors Python sanitize() in generate_boltz_jobs.py
@@ -82,6 +83,7 @@ function MoleculeSVG({ smiles, width = 200, height = 150 }) {
 }
 
 export default function CompoundVsTarget() {
+    const { token, sessionExpired } = useAuth();
     const [searchParams] = useSearchParams();
     const taskId = searchParams.get("taskId") || '';
     const [allCompounds, setAllCompounds] = useState([]);
@@ -403,8 +405,9 @@ export default function CompoundVsTarget() {
     }
 
     function fetchJobStatus() {
-        fetch(`/api/boltz_job_status?task_id=${taskId}`)
-            .then(r => r.json())
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+        fetch(`/api/boltz_job_status?task_id=${taskId}`, { headers })
+            .then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then(data => setBoltzJobs(data || {}))
             .catch(() => {});
     }
@@ -415,7 +418,10 @@ export default function CompoundVsTarget() {
         try {
             const resp = await fetch('/api/boltz_submit_from_heatmap', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
                 body: JSON.stringify({
                     task_id: taskId,
                     chembl_id: chemblId,
@@ -439,6 +445,8 @@ export default function CompoundVsTarget() {
                         [data.job_key]: { task_id: null, chembl_id: chemblId, ligand: ligandName, status: 'queued' },
                     }));
                 }
+            } else if (resp.status === 401) {
+                sessionExpired();
             } else {
                 alert(`Boltz2 submission failed: ${data.detail || 'unknown error'}`);
             }
@@ -535,14 +543,15 @@ export default function CompoundVsTarget() {
             j => j.status === 'queued' || j.status === 'running'
         );
         if (!hasActive) return;
+        const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
         const id = setInterval(() => {
-            fetch(`/api/boltz_job_status?task_id=${taskId}`)
-                .then(r => r.json())
+            fetch(`/api/boltz_job_status?task_id=${taskId}`, { headers })
+                .then(r => r.ok ? r.json() : Promise.reject(r.status))
                 .then(data => setBoltzJobs(data || {}))
                 .catch(() => {});
         }, 30000);
         return () => clearInterval(id);
-    }, [boltzJobs, taskId]);
+    }, [boltzJobs, taskId, token]);
 
     useEffect(() => {
         console.log("heatmapData updated:", heatmapData);
@@ -695,14 +704,16 @@ export default function CompoundVsTarget() {
             }}>
                 {/* Heatmap table */}
                 <div style={{
-                    flex: '1 1 auto',
-                    minWidth: isMobile ? '100%' : '300px',
-                    width: isMobile ? '100%' : undefined,
+                    flex: isMobile ? '1 1 auto' : '0 0 50%',
+                    width: isMobile ? '100%' : '50%',
                     overflowX: 'auto',
+                    display: 'flex',
+                    justifyContent: 'center',
                 }}>
                     {tableData && (
                         <div style={{
                             display: 'flex',
+                            justifyContent: 'center',
                         }}>
                             <table
                                 ref={heatmapRef}
@@ -774,12 +785,11 @@ export default function CompoundVsTarget() {
 
                 {/* Right column: molecule viewer + Boltz card */}
                 <div ref={rightColumnRef} style={{
-                    flex: '0 0 auto',
-                    minWidth: isMobile ? '100%' : '320px',
-                    maxWidth: isMobile ? '100%' : '480px',
-                    width: isMobile ? '100%' : undefined,
+                    flex: isMobile ? '1 1 auto' : '0 0 50%',
+                    width: isMobile ? '100%' : '50%',
                     display: 'flex',
                     flexDirection: 'column',
+                    alignItems: 'center',
                     gap: '20px',
                 }}>
                     {/* Tooltip with Molecule Images */}
@@ -788,6 +798,7 @@ export default function CompoundVsTarget() {
                         top: '20px',
                         maxHeight: 'calc(100vh - 40px)',
                         overflowY: 'auto',
+                        width: '100%',
                     }}>
                     <div style={{
                         backgroundColor: 'white',
@@ -1164,10 +1175,12 @@ export default function CompoundVsTarget() {
                         })()}
 
                     </div>{/* end white molecule card */}
-                    </div>{/* end sticky wrapper */}
 
                     {/* Submitted Boltz jobs table */}
                     {isInternal && Object.keys(boltzJobs).length > 0 && (() => {
+                        const chemblToUniprot = tableData
+                            ? Object.fromEntries(tableData.targets.map(t => [t.split(':')[0], t.split(':')[1] || t.split(':')[0]]))
+                            : {};
                         const jobsByTarget = Object.entries(boltzJobs).reduce((acc, [jobKey, info]) => {
                             const target = info.chembl_id || jobKey.split('__')[0] || '—';
                             if (!acc[target]) acc[target] = [];
@@ -1177,7 +1190,7 @@ export default function CompoundVsTarget() {
                         const statusColors = { pending: '#d97706', running: '#2563eb', done: '#16a34a', failed: '#dc2626', queued: '#6b7280' };
                         return (
                             <div style={{ marginTop: '16px' }}>
-                                <div style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>Submitted Jobs</div>
+                                <div style={{ fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>Submitted Boltz2 Jobs</div>
                                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                                     <thead>
                                         <tr style={{ backgroundColor: '#f3f4f6' }}>
@@ -1197,7 +1210,7 @@ export default function CompoundVsTarget() {
                                                     <tr key={jobKey} style={{ backgroundColor: i % 2 === 0 ? 'white' : '#f9fafb' }} onMouseEnter={() => handleJobRowHover(info.chembl_id || jobKey.split('__')[0], info.ligand || jobKey.split('__').slice(1).join('__'))} onMouseLeave={handleJobRowLeave}>
                                                         {i === 0 && (
                                                             <td rowSpan={jobs.length} style={{ padding: '6px 10px', borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', color: '#374151', fontWeight: '600', verticalAlign: 'middle' }}>
-                                                                {target}
+                                                                {chemblToUniprot[target] || target}
                                                             </td>
                                                         )}
                                                         <td style={{ padding: '6px 10px', borderBottom: isLast ? '2px solid #d1d5db' : '1px solid #e5e7eb', color: '#374151' }}>{info.ligand || jobKey.split('__').slice(1).join('__') || '—'}</td>
@@ -1229,6 +1242,7 @@ export default function CompoundVsTarget() {
                         );
                     })()}
 
+                    </div>{/* end sticky wrapper */}
                 </div>{/* end right column */}
             </div>{/* end main two-column row */}
         </Layout>

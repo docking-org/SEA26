@@ -8,7 +8,7 @@ import hashlib
 from datetime import datetime
 from typing import Union
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from altcha import verify_solution_v1
 from celery import chord
@@ -39,6 +39,7 @@ from ..helper import (
     get_smiles_property,
 )
 from ..utils.sea_tools import get_target_files
+from ..auth import get_current_user
 
 router = APIRouter()
 
@@ -56,11 +57,8 @@ def _compute_input_hash(query: str) -> str:
     return hashlib.sha256("\n".join(smiles_list).encode()).hexdigest()
 
 
-@router.post("/submit")
-async def submit_task(request: Request) -> dict[str, str]:
-    input_data = await request.json()
-    query = input_data["query"]
-
+async def _run_submit(query: str, task_id_prefix: str = "") -> JSONResponse | dict:
+    """Shared submission logic used by both /submit and /search."""
     non_empty_lines = [l for l in query.strip().splitlines() if l.strip()]
     if len(non_empty_lines) == 0:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
@@ -72,19 +70,6 @@ async def submit_task(request: Request) -> dict[str, str]:
         lines_detail = "; ".join([f"Line {line_num}: '{line}'" for line_num, line in invalid_smiles])
         raise HTTPException(status_code=400, detail=f"Invalid SMILES input. Please check the following lines: {lines_detail}")
 
-    api_key = request.headers.get("X-API-Key")
-    api_key_secret = os.getenv("SEA_API_KEY")
-    is_api_client = api_key_secret and api_key == api_key_secret
-
-    hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
-    if hmac_secret and not is_api_client:
-        altcha_payload = input_data.get("altcha")
-        if not altcha_payload:
-            raise HTTPException(status_code=400, detail="CAPTCHA verification required")
-        verified, err = verify_solution_v1(altcha_payload, hmac_secret)
-        if not verified:
-            raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
-
     input_hash = _compute_input_hash(query)
     cached_id = get_cached_job_id(input_hash)
     if cached_id:
@@ -92,17 +77,13 @@ async def submit_task(request: Request) -> dict[str, str]:
         if os.path.isdir(cached_job_dir):
             refresh_cached_job_ttl(input_hash)
             return {"task_id": cached_id}
-        # stale entry (job expired) — fall through and run fresh
 
     task_id = str(uuid.uuid4().hex[:12])
-
     try:
         acquire_job_slot(task_id)
     except RateLimitExceeded:
         return JSONResponse(status_code=429, content={"detail": "Server is busy. Please try again later."})
 
-    # Create job artifacts only after rate-limit check passes so a rejected
-    # request never leaves a directory stuck at PENDING with no input.
     job_dir = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output"
     _mkdir_(job_dir)
     init_progress_file(task_id)
@@ -113,6 +94,37 @@ async def submit_task(request: Request) -> dict[str, str]:
     else:
         set_cached_job_id(input_hash, task_id)
     return {"task_id": task_id}
+
+
+@router.post("/submit_sea")
+async def api_search(request: Request) -> dict[str, str]:
+    """API/CLI endpoint — requires a valid Bearer JWT token, no CAPTCHA."""
+    if os.getenv("POSTGRESQL_DATABASE_URL"):
+        bearer = request.headers.get("Authorization", "")
+        if not bearer.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Bearer token required",
+                                headers={"WWW-Authenticate": "Bearer"})
+        get_current_user(bearer[7:])
+
+    input_data = await request.json()
+    return await _run_submit(input_data["query"])
+
+
+@router.post("/submit")
+async def submit_task(request: Request) -> dict[str, str]:
+    input_data = await request.json()
+    query = input_data["query"]
+
+    hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
+    if hmac_secret:
+        altcha_payload = input_data.get("altcha")
+        if not altcha_payload:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification required")
+        verified, err = verify_solution_v1(altcha_payload, hmac_secret)
+        if not verified:
+            raise HTTPException(status_code=400, detail="CAPTCHA verification failed")
+
+    return await _run_submit(query)
 
 
 async def _submit_sea_job(task_id: str, input_data: str):
@@ -324,6 +336,8 @@ def get_recent_tasks(limit: int = 100):
     entries = entries[:limit]
     recent_tasks = []
     for entry in entries:
+        if entry.name == "msa_cache":
+            continue
         mtime = entry.stat().st_mtime
         time_stamp = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
         progress = get_progress(entry.name)
