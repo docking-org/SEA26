@@ -9,3 +9,8 @@ plotly
 requests
 altcha
 tqdm
+werkzeug
+python-jose[cryptography]
+sqlalchemy[asyncio]
+asyncpg
+email-validator

@@ -10,6 +10,7 @@ import Result from './SeaResults';
 import RecentTasks from './RecentTasks';
 import CompoundVsTarget from './CompoundVSTarget';
 import NotFound from './NotFound';
+import { AuthProvider } from './auth';
 
 
 // Initialize Google Analytics
@@ -43,6 +44,8 @@ const router = createBrowserRouter([
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <AuthProvider>
+      <RouterProvider router={router} />
+    </AuthProvider>
   </StrictMode>
 );

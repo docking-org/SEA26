@@ -10,6 +10,7 @@ from dotenv import load_dotenv, find_dotenv
 from .routes.sea_routes import router as sea_router
 from .routes.boltz_routes import router as boltz_router
 from .routes.admin_routes import router as admin_router
+from .auth import router as auth_router
 from .utils.sea_tools import get_target_files
 
 load_dotenv(find_dotenv())
@@ -27,6 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router, prefix="/api")
 app.include_router(sea_router, prefix="/api")
 app.include_router(boltz_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")

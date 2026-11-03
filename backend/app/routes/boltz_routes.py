@@ -17,13 +17,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from altcha import verify_solution_v1
 
+from fastapi import Header
+
+from ..auth import get_current_user
 from ..celery_worker import run_boltz_job
 from ..scripts.generate_boltz_jobs import generate_jobs as _generate_boltz_jobs, write_yaml, sanitize
-from ..utils.auth_tools import _require_internal
+from ..utils.auth_tools import _require_internal, _is_internal_ip
 
 router = APIRouter()
 
-_TERMINAL_STATES = {"done", "failed"}
+_TERMINAL_STATES = {"done", "failed", "killed"}
 
 
 def _pick_cuda_device(job_name: str) -> str:
@@ -78,7 +81,7 @@ def _boltz_jobs_lock(jobs_file: str):
 
 
 def _msa_cache_dir() -> str:
-    default = os.path.join(os.getenv("SEA_JOB_DIR", "/tmp"), "msa_cache")
+    default = os.path.join(os.getenv("BOLTZ_CACHE_DIR", "/scratch/sea_boltz"), "msa_cache")
     return os.getenv("BOLTZ_MSA_CACHE_DIR", default)
 
 
@@ -206,8 +209,15 @@ async def boltz_submit(request: Request):
     return {"results": results}
 
 
-@router.post("/boltz_submit_from_heatmap", include_in_schema=False, dependencies=[Depends(_require_internal)])
-async def boltz_submit_from_heatmap(request: Request):
+@router.post("/boltz_submit_from_heatmap", include_in_schema=False)
+async def boltz_submit_from_heatmap(request: Request, authorization: str = Header(None)):
+    if os.getenv("POSTGRESQL_DATABASE_URL"):
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        user_email = get_current_user(authorization[7:])
+    else:
+        user_email = None
+
     body = await request.json()
     task_id = body.get("task_id")
     chembl_id = body.get("chembl_id")
@@ -238,19 +248,29 @@ async def boltz_submit_from_heatmap(request: Request):
     if os.path.isdir(pred_dir_chk) and glob.glob(os.path.join(pred_dir_chk, "*.cif")):
         return {"status": "already_done", "job_key": job_name}
 
-    # Enforce global queue limit (count non-terminal jobs across all tasks)
-    max_queued = int(os.getenv("BOLTZ_MAX_QUEUED", "10"))
+    # Enforce per-user limit (1 active user-job at a time) and global user-job cap (5)
+    max_user_jobs = int(os.getenv("BOLTZ_MAX_USER_JOBS", "5"))
     job_dir_base = os.getenv("SEA_JOB_DIR", "")
-    active_count = 0
+    user_active = 0
+    global_user_active = 0
     for jf in glob.glob(f"{job_dir_base}/*/boltz_jobs/.boltz_jobs.json"):
+        print(jf)
         try:
             with open(jf) as _f:
                 _jobs = json.load(_f)
-            active_count += sum(1 for j in _jobs.values() if j.get("status") not in _TERMINAL_STATES)
+            for j in _jobs.values():
+                if j.get("status") not in _TERMINAL_STATES and j.get("user_email") is not None:
+                    global_user_active += 1
+                    if j.get("user_email") == user_email:
+                        user_active += 1
+            print(user_active)
         except Exception:
             pass
-    if active_count >= max_queued:
-        raise HTTPException(status_code=429, detail=f"Queue full ({active_count}/{max_queued} jobs active). Please try again later.")
+
+    if user_active >= 2:
+        raise HTTPException(status_code=429, detail="You already have 2 jobs running or queued. Please wait for them to complete.")
+    if global_user_active >= max_user_jobs:
+        raise HTTPException(status_code=429, detail=f"Queue full ({global_user_active}/{max_user_jobs} user jobs active). Please try again later.")
 
     # Read protein sequences from sea_result.tsv
     sea_result_path = f"{os.getenv('SEA_JOB_DIR')}/{task_id}/sea_output/sea_result.tsv"
@@ -329,13 +349,13 @@ async def boltz_submit_from_heatmap(request: Request):
             f"export CUDA_VISIBLE_DEVICES={cuda_device}\n"
             f"export NUMBA_CACHE_DIR={numba_cache}\n"
             f"export MPLCONFIGDIR={mpl_cache}\n"
-            "export LD_LIBRARY_PATH=/nfs/home/khtang/.conda/envs/sea25/lib\n"
+            f"export LD_LIBRARY_PATH={os.path.dirname(os.path.dirname(boltz_bin))}/lib\n"
             f"{cmd}\n"
         )
     os.chmod(run_path, 0o755)
 
     # Pre-assign task UUID so we only need one locked write (no second save needed)
-    task_uuid = str(uuid.uuid4().hex[:8])
+    task_uuid = str(uuid.uuid4().hex[:12])
     with _boltz_jobs_lock(jobs_file):
         # Re-check de-dup inside lock to close the TOCTOU window
         existing = _load_boltz_jobs(jobs_file)
@@ -348,6 +368,7 @@ async def boltz_submit_from_heatmap(request: Request):
             "status": "queued",
             "queued_at": datetime.utcnow().isoformat(),
             "msa_cache_targets": msa_cache_targets,
+            "user_email": user_email,
         }
         _save_boltz_jobs(jobs_file, existing)
 
@@ -361,8 +382,13 @@ async def boltz_submit_from_heatmap(request: Request):
     return {"status": "queued", "job_key": job_name}
 
 
-@router.get("/boltz_job_status", dependencies=[Depends(_require_internal)])
-def boltz_job_status(request: Request):
+@router.get("/boltz_job_status")
+def boltz_job_status(request: Request, authorization: str = Header(None)):
+    client_ip = request.client.host if request.client else ""
+    if not _is_internal_ip(client_ip):
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Authentication required")
+        get_current_user(authorization[7:])
     task_id = request.query_params.get("task_id")
     if not task_id:
         raise HTTPException(status_code=400, detail="task_id required")
