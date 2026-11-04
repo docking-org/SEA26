@@ -879,6 +879,18 @@ def cleanup_task(*args, **kwargs):
         dir_path = os.path.join(save_folder, name)
         if os.path.isdir(dir_path):
             if (time.time() - os.path.getmtime(dir_path)) > 96 * 3600:
+                # Revoke any pending boltz celery tasks before deleting the dir
+                jobs_file = os.path.join(dir_path, "boltz_jobs", ".boltz_jobs.json")
+                if os.path.exists(jobs_file):
+                    try:
+                        with open(jobs_file) as _jf:
+                            _jobs = json.load(_jf)
+                        for _jinfo in _jobs.values():
+                            _cid = _jinfo.get("celery_task_id")
+                            if _cid and _jinfo.get("status") not in {"done", "failed", "killed"}:
+                                celery.control.revoke(_cid, terminate=False)
+                    except Exception as _e:
+                        print(f"cleanup_task: failed to revoke boltz tasks for {name}: {_e}")
                 shutil.rmtree(dir_path)
                 removed += 1
                 print(f"Removed old job folder: {dir_path}")
@@ -936,6 +948,12 @@ def run_boltz_job(self, task_id: str, job_key: str, boltz_dir: str, run_script: 
     success = False
     try:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        if not os.path.exists(run_script):
+            with open(log_file, "w") as lf:
+                lf.write(f"[{_now()}] run script not found: {run_script} — job dir was likely cleaned up\n")
+            _update_jobs({"status": "failed", "error": "run_script_missing"})
+            _release_gpu_lock(gpu_idx)
+            return
         proc_env = os.environ.copy()
         proc_env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
         with open(log_file, "w") as lf:
