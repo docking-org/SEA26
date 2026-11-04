@@ -11,14 +11,16 @@ Provided by the [Shoichet Laboratory](https://bkslab.org) in the Department of P
 |---|---|
 | **web** | FastAPI backend serving the API and (in production) the built React frontend |
 | **redis** | Message broker and result backend for Celery |
-| **redisworker** | Celery worker processing SEA scoring tasks |
-| **redisbeat** | Celery beat scheduler for periodic tasks |
+| **redisworker** | Celery worker processing SEA scoring tasks across 4 priority queues (`sea-slot-0` through `sea-slot-3`) |
+| **beat_scheduler** | Celery beat scheduler for periodic tasks (e.g. daily job directory cleanup) |
+| **boltzworker-gpu{0-3}** | Per-GPU Celery workers running Boltz2 structure predictions; each listens on `boltz-gpu{n}` (manual) and `boltz-gpu{n}-auto` (auto-queued from SEA results) queues |
 | **frontend** | Vite dev server with HMR (development only) |
 
 ## Prerequisites
 
 - Docker and Docker Compose
 - Access to the SEA data folder and job directory (NFS or local paths)
+- NVIDIA GPUs with Docker GPU support for Boltz2 structure prediction
 
 ## Environment Setup
 
@@ -43,6 +45,12 @@ STD_EXP=0.665
 RADIUS=2
 FP_SIZE=2048
 USE_FEATUREs=False
+
+# Boltz2 structure prediction
+BOLTZ_NUM_GPUS=4
+BOLTZ_MAX_QUEUED=10
+BOLTZ_BIN=/opt/conda/envs/sea25/bin/boltz
+BOLTZ_CACHE_DIR=/scratch/sea_boltz
 
 # ALTCHA captcha HMAC secret (generate your own)
 ALTCHA_HMAC_SECRET="your-secret-here"
@@ -87,7 +95,7 @@ pip install -r requirements.txt
 redis-server --port 6380 --daemonize yes
 ```
 
-### 3. Start the backend and worker (in separate terminals)
+### 3. Start the backend and workers (in separate terminals)
 
 ```bash
 uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --reload
@@ -95,6 +103,14 @@ uvicorn backend.app.api:app --host 0.0.0.0 --port 5050 --reload
 
 ```bash
 celery -A backend.app.celery_worker worker --beat -s /tmp/sea-celerybeat-schedule --loglevel=info --concurrency=5 --max-tasks-per-child=10
+```
+
+Start one Boltz2 worker per GPU (GPU index passed via queue name convention):
+
+```bash
+# Repeat for each GPU, substituting the GPU index
+CUDA_VISIBLE_DEVICES=0 celery -A backend.app.celery_worker worker \
+  -Q boltz-gpu0-auto,boltz-gpu0 --concurrency=1 --pool solo --loglevel=info
 ```
 
 ### 4. Start the frontend dev server
