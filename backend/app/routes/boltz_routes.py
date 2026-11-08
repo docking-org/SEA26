@@ -29,11 +29,6 @@ router = APIRouter()
 _TERMINAL_STATES = {"done", "failed", "killed"}
 
 
-def _pick_cuda_device(job_name: str) -> str:
-    devices_str = os.getenv("BOLTZ_CUDA_DEVICES") or os.getenv("BOLTZ_CUDA_DEVICE", "0")
-    devices = [d.strip() for d in devices_str.split(",") if d.strip()]
-    return devices[hash(job_name) % len(devices)]
-
 
 def _verify_captcha(body: dict, request: Request = None):
     hmac_secret = os.getenv("ALTCHA_HMAC_SECRET")
@@ -340,13 +335,11 @@ async def boltz_submit_from_heatmap(request: Request, authorization: str = Heade
     run_path = f"{job_dir}/run.sh"
     if os.path.exists(run_path):
         os.remove(run_path)
-    cuda_device = _pick_cuda_device(job_name)
     with open(run_path, "w") as f:
         f.write(
             "#!/usr/bin/env bash\nset -euo pipefail\n"
             f"mkdir -p {numba_cache} {mpl_cache}\n"
             f"export HOME={os.path.abspath(job_dir)}\n"
-            f"export CUDA_VISIBLE_DEVICES={cuda_device}\n"
             f"export NUMBA_CACHE_DIR={numba_cache}\n"
             f"export MPLCONFIGDIR={mpl_cache}\n"
             f"export LD_LIBRARY_PATH={os.path.dirname(os.path.dirname(boltz_bin))}/lib\n"

@@ -38,7 +38,7 @@ from ..helper import (
     validate_smiles_input,
     get_smiles_property,
 )
-from ..utils.sea_tools import get_target_files
+from ..utils.sea_tools import get_target_files, gev_paths, TC_CUTOFF, GEV_BIN_WIDTH
 from ..auth import get_current_user
 
 router = APIRouter()
@@ -70,13 +70,16 @@ async def _run_submit(query: str, task_id_prefix: str = "") -> JSONResponse | di
         lines_detail = "; ".join([f"Line {line_num}: '{line}'" for line_num, line in invalid_smiles])
         raise HTTPException(status_code=400, detail=f"Invalid SMILES input. Please check the following lines: {lines_detail}")
 
-    input_hash = _compute_input_hash(query)
-    cached_id = get_cached_job_id(input_hash)
-    if cached_id:
-        cached_job_dir = f"{os.getenv('SEA_JOB_DIR')}/{cached_id}"
-        if os.path.isdir(cached_job_dir):
-            refresh_cached_job_ttl(input_hash)
-            return {"task_id": cached_id}
+    cache_enabled = os.getenv("CACHE_QUERIES", "True").strip().lower() not in ("false", "0", "no")
+
+    input_hash = _compute_input_hash(query) if cache_enabled else None
+    if cache_enabled:
+        cached_id = get_cached_job_id(input_hash)
+        if cached_id:
+            cached_job_dir = f"{os.getenv('SEA_JOB_DIR')}/{cached_id}"
+            if os.path.isdir(cached_job_dir):
+                refresh_cached_job_ttl(input_hash)
+                return {"task_id": cached_id}
 
     task_id = str(uuid.uuid4().hex[:12])
     try:
@@ -91,7 +94,7 @@ async def _run_submit(query: str, task_id_prefix: str = "") -> JSONResponse | di
     result = await _submit_sea_job(task_id, query)
     if "error" in result:
         release_job_slot(task_id)
-    else:
+    elif cache_enabled:
         set_cached_job_id(input_hash, task_id)
     return {"task_id": task_id}
 
@@ -141,20 +144,19 @@ async def _submit_sea_job(task_id: str, input_data: str):
             for parts in [x.strip().split()]
         ]
 
-        data_folder = os.getenv("SEA_DATA_FOLDER")
-        tc_cutoff = 0.29
-        gev_bin_width = 0.25
-        gev_freq_file = os.path.join(data_folder, "0.29_orig_freq.tsv")
-        gev_cache_file = os.path.join(data_folder, f"gev_params_tc{tc_cutoff}_bw{gev_bin_width}.tsv")
+        gev_freq_file, gev_cache_file = gev_paths()
+        tc_cutoff = TC_CUTOFF
 
-        if os.path.exists(gev_freq_file) or os.path.exists(gev_cache_file):
-            gev_c, gev_loc, gev_scale = load_gev_params(gev_freq_file, gev_cache_file, bin_width=gev_bin_width)
-        else:
-            gev_c, gev_loc, gev_scale = 0.0, 0.0, 1.0
+        if not os.path.exists(gev_freq_file) and not os.path.exists(gev_cache_file):
+            raise HTTPException(
+                status_code=503,
+                detail="GEV parameters not available. Ensure 0.29_orig_freq.tsv exists in "
+                       "SEA_DATA_FOLDER or gev_params_tc0.29_bw0.25.tsv exists in GEV_CACHE_DIR.",
+            )
+        gev_c, gev_loc, gev_scale = load_gev_params(gev_freq_file, gev_cache_file, bin_width=GEV_BIN_WIDTH)
 
         job_gev_dest = os.path.join(os.getenv("SEA_JOB_DIR"), task_id, "gev_params.tsv")
-        if os.path.exists(gev_cache_file):
-            shutil.copy2(gev_cache_file, job_gev_dest)
+        shutil.copy2(gev_cache_file, job_gev_dest)
 
         list_chembl = get_target_files()
         total = len(list_chembl)
