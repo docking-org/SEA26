@@ -621,6 +621,15 @@ export default function Result() {
                         >
                             Compound VS Targets
                         </a>
+                        {boltzStatus && boltzStatus.done > 0 && (
+                            <a
+                                href={`/api/boltz_download_all?task_id=${taskId}`}
+                                className="inline-block px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 font-bold no-underline text-sm sm:text-base text-center"
+                                download
+                            >
+                                Download Boltz-2 Results (ZIP)
+                            </a>
+                        )}
                         </div>
                         {inputCompounds.length > 0 && (
                             <div className="mt-6">
@@ -664,7 +673,7 @@ export default function Result() {
                         )}
                         {inputCompounds.length === 1 ? (
                             <p className="text-xs text-gray-500 bg-gray-100 rounded-md px-3 py-2 mt-4">
-                                Boltz2 structure predictions are automatically queued for the top 5 novel targets.
+                                Boltz2 structure predictions are automatically queued for the top 5 novel targets with Tc less than 1.
                             </p>
                         ) : inputCompounds.length > 1 ? (
                             <p className="text-xs text-gray-500 bg-gray-100 rounded-md px-3 py-2 mt-4">
@@ -732,7 +741,7 @@ export default function Result() {
                                     affinity_pred_value: 'ΔG pred',
                                     affinity_probability_binary: 'Bind prob.',
                                 };
-                                const columns = displayColumns.filter((col) => col in result[0]);
+                                const columns = displayColumns.filter((col) => result.some(r => col in r));
                                 // chembl_id -> set of done ligand names for that target
                                 const boltzDoneByChembl = Object.values(boltzJobs).reduce((acc, info) => {
                                     if (info.status === 'done' && info.chembl_id) {
