@@ -587,7 +587,9 @@ export default function Result() {
                         {taskStatus === 'ERROR'
                             ? 'Task failed.'
                             : percent1Done === 100
-                                ? 'Complete'
+                                ? 'Complete' :
+                                percent1Done === 0
+                                    ? 'Pending to run...'
                                 : percent1Done >= 98
                                     ? 'Post-processing output...'
                                     : 'Scoring targets...'}
